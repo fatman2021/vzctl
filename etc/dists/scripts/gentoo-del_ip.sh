@@ -26,27 +26,16 @@
 #   VE_STATE      - state of CT; could be one of:
 #                     starting | stopping | running | stopped
 VENET_DEV=venet0
-CFGFILE=/etc/conf.d/net
-
-# Return true if we have old baselayout-1.x based CT and false if not.
-# Note: /etc/gentoo-release has nothing to do with init system
-function is_baselayout1()
-{
-	[ -f /sbin/functions.sh ]
-}
+CFGFILE=/etc/conf.d/netif.${VENET_DEV}
 
 function del_ip()
 {
 	local ip
 	for ip in ${IP_ADDR}; do
 		if grep -qw "${ip}" ${CFGFILE}; then
-			if ! is_baselayout1 ; then
-				del_param "${CFGFILE}" "config_${VENET_DEV}" "${ip}/32"
-			else
-				del_param3 "${CFGFILE}" "config_${VENET_DEV}" "${ip}/32"
-			fi
+			del_param "${CFGFILE}" "ipaddrs" "${ip}/32"
 			if [ "x${VE_STATE}" = "xrunning" ]; then
-				/etc/init.d/net.${VENET_DEV} restart >/dev/null 2>&1
+				/etc/init.d/netif.${VENET_DEV} restart >/dev/null 2>&1
 			fi
 		fi
 	done
