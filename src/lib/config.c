@@ -722,7 +722,7 @@ static int parse_ip(vps_param *vps_p, char *val, int id)
 		if (inet_ntop(family, ip, dst, sizeof(dst)) == NULL)
 			return ERR_INVAL;
 		if (!find_ip(&net->ip, dst))
-			add_str_param(&net->ip, dst);
+			add_str_param(&net->ip, val);
 	}
 
 	return 0;
