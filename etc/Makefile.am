@@ -27,7 +27,7 @@ SUBDIRS = \
 	network-scripts \
 	udev
 
-pkgconf_DATA = vz.conf
+pkgconf_DATA = vz.conf vznet.conf
 
 EXTRA_DIST = $(pkgconf_DATA)
 
