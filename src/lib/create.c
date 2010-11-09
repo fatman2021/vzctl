@@ -78,12 +78,28 @@ int fs_create(envid_t veid, fs_param *fs, tmpl_param *tmpl, dq_param *dq,
 	int quota = 0;
 
 	snprintf(tarball, sizeof(tarball), "%s/%s.tar", fs->tmpl, tar_nm);
-	if (!stat_file(tarball))
-		snprintf(tarball, sizeof(tarball), "%s/%s.tar.gz", fs->tmpl, tar_nm);
 	if (!stat_file(tarball)) {
-		logger(-1, 0, "Cached OS template %s not found", tarball);
-		return VZ_OSTEMPLATE_NOT_FOUND;
+		char *extensions[3] = { "gz", "bz2", "xz" };
+		int  ext = 0;
+		int  template_found = 0;
+
+		for (; ext < 3; ext++) {
+			snprintf(tarball, sizeof(tarball), "%s/%s.tar.%s", fs->tmpl, tar_nm, extensions[ext]);
+
+			/* Ok. We got it, lets continue */
+			if (stat_file(tarball)) {
+				template_found = 1;
+				break;
+			}
+		}
+
+		if (!template_found) {
+			/* This is reached if no valid container extension was found */
+			logger(-1, 0, "Cached OS template %s not found", tarball);
+			return VZ_OSTEMPLATE_NOT_FOUND;
+		}
 	}
+
 	/* Lock CT area */
 	if (make_dir(fs->private, 0))
 		return VZ_FS_NEW_VE_PRVT;

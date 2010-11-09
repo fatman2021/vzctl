@@ -41,13 +41,27 @@ create_prvt()
 	TMP="$(df -P "$VE_PRVT")" ||
 		vzerror "Failed to calculate available disk space on $VE_PRVT" ${VZ_FS_NEW_VE_PRVT}
 	AVAIL="$(echo "$TMP" | awk 'END{print $4}')"
+
+	OPT=
+
+	case $HEADER in
+		' 1f 8b')
+			OPT=-z
+			;;
+		' 42 5a')
+			OPT=-j
+			;;
+		' fd 37')
+			OPT=-J
+			;;
+	esac
+
 	if [ "$HEADER" = ' 1f 8b' ]; then
 		NEEDED="$(gzip -l "$PRIVATE_TEMPLATE" | awk 'END{print int($2/1024)}')"
-		OPT=-z
 	else
-		NEEDED="$(find "$PRIVATE_TEMPLATE" -maxdepth 0 -path "$PRIVATE_TEMPLATE" -printf %k)"
-		OPT=
+		NEEDED=$(find "$PRIVATE_TEMPLATE" -maxdepth 0 -path "$PRIVATE_TEMPLATE" -printf %k)
 	fi
+
 	[ "$AVAIL" -ge "$NEEDED" ] ||
 		vzerror "Insufficient disk space in $VE_PRVT; available: $AVAIL, needed: $NEEDED" ${VZ_FS_NO_DISK_SPACE}
 	tar -C "$VE_PRVT" ${TAR_OPT} ${OPT} -xf "$PRIVATE_TEMPLATE" ||
