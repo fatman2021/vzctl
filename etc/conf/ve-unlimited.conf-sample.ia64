@@ -17,8 +17,6 @@
 
 VERSION="2"
 
-ONBOOT="no"
-
 # UBC parameters (in form of barrier:limit)
 # Primary parameters
 AVNUMPROC="unlimited"
@@ -47,5 +45,5 @@ DCACHESIZE="unlimited"
 PHYSPAGES="0:unlimited"
 NUMIPTENT="unlimited"
 
-# Disk quota parameters (in form of softlimit:hardlimit)
-DISK_QUOTA="no"
+DISKSPACE="unlimited"
+DISKINODES="unlimited"
