@@ -289,27 +289,12 @@ int yesno2id(const char *str)
 
 int get_netaddr(const char *ip_str, void *ip)
 {
-	char *ip_address = NULL;
-	int slash_pos = 0;
-	
-	if (0 != (slash_pos = strcspn(ip_str, "/"))) {
-		ip_address = malloc(slash_pos + 1);
-		strncpy(ip_address, ip_str, slash_pos);
-		ip_address[slash_pos + 1] = '\0';
-	} else {
-		size_t ip_address_len = strlen(ip_str);
-		ip_address = malloc(ip_address_len + 1);
-		strncpy(ip_address, ip_str, ip_address_len);
-		ip_address[ip_address_len + 1] = '\0';
-	}
-	
-	if (strchr(ip_address, ':')) {
-		if (inet_pton(AF_INET6, ip_address, ip) <= 0)
+	if (strchr(ip_str, ':')) {
+		if (inet_pton(AF_INET6, ip_str, ip) <= 0)
 			return -1;
 		return AF_INET6;
 	}
-	
-	if (inet_pton(AF_INET, ip_address, ip) <= 0)
+	if (inet_pton(AF_INET, ip_str, ip) <= 0)
 		return -1;
 	return AF_INET;
 }
