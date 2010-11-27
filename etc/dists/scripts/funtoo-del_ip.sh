@@ -25,6 +25,7 @@
 # Optional parameters:
 #   VE_STATE      - state of CT; could be one of:
 #                     starting | stopping | running | stopped
+
 VENET_DEV=venet0
 CFGFILE=/etc/conf.d/netif.${VENET_DEV}
 
