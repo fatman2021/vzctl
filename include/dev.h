@@ -28,7 +28,7 @@
  */
 typedef struct {
 	list_elem_t list;		/**< prev/next elements. */
-	char name[32];			/**< device name. */
+	char *name;			/**< device name. */
 	dev_t dev;			/**< device number. */
 	unsigned int type;		/**< S_IFBLK | S_IFCHR. */
 	unsigned int mask;		/**< access mode. */
@@ -40,6 +40,10 @@ typedef struct {
 typedef struct {
 	list_head_t dev;
 } dev_param;
+
+typedef struct {
+	list_head_t list;
+} pci_param;
 
 /** Allow/disallow access to devices on host system from CT.
  *
@@ -54,5 +58,9 @@ int vps_set_devperm(vps_handler *h, envid_t veid, const char *root,
 int set_devperm(vps_handler *h, envid_t veid, dev_res *dev);
 int add_dev_param(dev_param *dev, dev_res *res);
 void free_dev_param(dev_param *dev);
+
+int vps_set_pci(vps_handler *h, envid_t veid, int op, const char *root,
+		pci_param *pci);
+void free_pci_param(pci_param *dev);
 
 #endif

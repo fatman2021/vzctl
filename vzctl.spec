@@ -21,7 +21,7 @@
 
 Summary: OpenVZ containers control utility
 Name: vzctl
-Version: 3.0.24
+Version: 3.0.25
 Release: 1%{?dist}
 License: GPL
 Group: System Environment/Kernel
@@ -134,6 +134,7 @@ rm -rf $RPM_BUILD_ROOT
 %attr(644, root, root) %{_bashcdir}/*
 
 %config(noreplace) %{_configdir}/vz.conf
+%config(noreplace) %{_configdir}/osrelease.conf
 %config(noreplace) %{_distconfdir}/*.conf
 %config %{_vpsconfdir}/ve-basic.conf-sample
 %config %{_vpsconfdir}/ve-light.conf-sample
@@ -180,6 +181,15 @@ else # RedHat/Fedora/CentOS case
 	fi
 fi
 
+# (Upgrading from <= vzctl-3.0.24)
+# If vz is running and vzeventd is not, start it
+if %{_initddir}/vz status >/dev/null 2&>1; then
+	if ! %{_initddir}/vzeventd status >/dev/null 2&>1; then
+		%{_initddir}/vzeventd start
+	fi
+fi
+exit 0
+
 %preun
 if [ $1 = 0 ]; then
 	/sbin/chkconfig --del vz >/dev/null 2>&1
@@ -204,7 +214,7 @@ Containers control API library
 %attr(755,root,root) %{_pkglibdir}/scripts/vps-create
 %attr(755,root,root) %{_pkglibdir}/scripts/vzevent-stop
 %attr(755,root,root) %{_pkglibdir}/scripts/vzevent-reboot
-
+%attr(755,root,root) %{_pkglibdir}/scripts/vps-pci
 
 %changelog
 * Wed Jun 13 2007 Andy Shevchenko <andriy@asplinux.com.ua> - 3.0.17-1

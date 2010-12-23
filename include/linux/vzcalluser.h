@@ -71,9 +71,28 @@ struct vzctl_ve_netdev {
 	char __user *dev_name;
 };
 
+struct vzctl_ve_pci_dev {
+	int domain;
+	unsigned int bus;
+	unsigned int slot;
+	unsigned int func;
+};
+
 struct vzctl_ve_meminfo {
 	envid_t veid;
 	unsigned long val;
+};
+
+struct vzctl_ve_configure {
+	unsigned int veid;
+	unsigned int key;
+#define VE_CONFIGURE_OS_RELEASE		2
+#define VE_CONFIGURE_ADD_PCI_DEVICE	3
+#define VE_CONFIGURE_DEL_PCI_DEVICE	4
+#define VE_CONFIGURE_CREATE_PROC_LINK	5
+	unsigned int val;
+	unsigned int size;
+	char data[0];
 };
 
 /*
@@ -272,6 +291,8 @@ struct vzctl_cpustatctl {
 					struct vzctl_ve_netdev)
 #define VZCTL_VE_MEMINFO	_IOW(VZCTLTYPE, 13,			\
 					struct vzctl_ve_meminfo)
+#define VZCTL_VE_CONFIGURE	_IOW(VZCTLTYPE, 15,			\
+					struct vzctl_ve_configure)
 
 #ifdef __KERNEL__
 #include <linux/compat.h>

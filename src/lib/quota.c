@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2000-2009, Parallels, Inc. All rights reserved.
+ *  Copyright (C) 2000-2010, Parallels, Inc. All rights reserved.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -49,8 +49,6 @@ int quota_set(envid_t veid, char *private, dq_param *param)
 	char buf[64];
 	char *arg[24];
 
-	if (param == NULL)
-		return -1;
 	if (param->diskspace == NULL &&
 		param->diskinodes == NULL &&
 		param->exptime == NULL &&
@@ -114,8 +112,6 @@ int quota_init(envid_t veid, char *private, dq_param *param)
 	char buf[64];
 	char *arg[24];
 
-	if (param == NULL)
-		return -1;
 	if (check_var(private,
 		"Error: Not enough parameters, private not set"))
 	{
@@ -188,12 +184,10 @@ int quota_init(envid_t veid, char *private, dq_param *param)
  */
 int quota_on(envid_t veid, char *private, dq_param *param)
 {
-	int i, ret, retry = 0;
+	int i, ret, ret2 = 0, tried = 0;
 	char buf[64];
 	char *arg[24];
 
-	if (param == NULL)
-		return -1;
 	if (check_var(param->diskspace,
 		"Error: Not enough parameters, diskspace quota not set"))
 	{
@@ -242,31 +236,37 @@ int quota_on(envid_t veid, char *private, dq_param *param)
 	} else
 		arg[i++] = strdup("0");
 	arg[i] = 0;
-/*	if (gparam->skipquotacheck == YES)
-		arg[i++] = strdup("--nocheck");
-*/
+
 retry:
 	if ((ret = run_script(VZQUOTA, arg, NULL, 0))) {
 		switch (ret) {
 		case EXITCODE_QUOTNOTEXIST:
-			ret = quota_init(veid, private, param);
-			if (!ret && !retry) {
-				retry++;
-				goto retry;
+			if (!tried) {
+				tried++;
+				/* Initialize the quota and retry */
+				ret2 = quota_init(veid, private, param);
+				if (!ret2)
+					goto retry;
 			}
 			break;
 		case EXITCODE_QUOTARUN:
-			ret = quota_set(veid, private, param);
+			/* Ignore the error, run quota set instead */
+			ret = 0;
+			ret2 = quota_set(veid, private, param);
 			break;
-		}
-		if (ret) {
-			logger(-1, 0, "vzquota on failed [%d]", ret);
-			ret = VZ_DQ_SET;
 		}
 	}
 	free_arg(arg);
 
-	return ret;
+	if (ret2)
+		return ret2;
+
+	if (ret) {
+		logger(-1, 0, "vzquota on failed [%d]", ret);
+		return VZ_DQ_ON;
+	}
+
+	return 0;
 }
 
 /** Turn disk quota off.
@@ -294,6 +294,8 @@ int quota_off(envid_t veid, int force)
 			logger(-1, 0, "vzquota off failed [%d]", ret);
 			ret = VZ_DQ_OFF;
 		}
+		else
+			ret = 0;
 	}
 	free_arg(arg);
 
@@ -312,7 +314,6 @@ int quota_ctl(envid_t veid, int cmd)
 	char buf[64];
 	char *arg[6];
 	int quiet = 0;
-	int errcode = 0;
 
 	i = 0;
 	arg[i++] = strdup(VZQUOTA);
@@ -343,7 +344,6 @@ int quota_ctl(envid_t veid, int cmd)
 		arg[i++] = strdup(buf);
 		arg[i++] = strdup("-f");
 		arg[i++] = strdup("-t");
-		errcode = VZ_DQ_UGID_NOTINITIALIZED;
 		quiet = 1;
 		break;
 	case QUOTA_SHOW:
@@ -357,10 +357,7 @@ int quota_ctl(envid_t veid, int cmd)
 		return VZ_SYSTEM_ERROR;
 	}
 	arg[i] = NULL;
-	if ((ret = run_script(VZQUOTA, arg, NULL, quiet))) {
-		if (errcode)
-			ret = errcode;
-	}
+	ret = run_script(VZQUOTA, arg, NULL, quiet);
 	free_arg(arg);
 
 	return ret;
@@ -389,16 +386,14 @@ int vps_set_quota(envid_t veid, dq_param *dq)
 	if (quota_ctl(veid, QUOTA_STAT)) {
 		logger(-1, 0, "Error: Unable to apply new quota values:"
 			" quota not running");
-		return -1;
+		return VZ_DQ_SET;
 	}
 	if (dq->ugidlimit != NULL) {
 		ret = quota_ctl(veid, QUOTA_STAT2);
-		if (ret && *dq->ugidlimit) {
+		if (ret == EXITCODE_UGID_NOTRUN && *dq->ugidlimit) {
 			logger(-1, 0, "Unable to apply new quota values:"
 				" ugid quota not initialized");
 			return VZ_DQ_UGID_NOTINITIALIZED;
-//			tmp_ugidlimit = dq->ugidlimit;
-//			dq->ugidlimit = NULL;
 		} else if (!ret && !*dq->ugidlimit) {
 			logger(-1, 0, "WARNING: Unable to turn ugid quota"
 				" off. New parameters will be applied"

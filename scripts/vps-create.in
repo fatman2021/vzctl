@@ -30,7 +30,7 @@ vzcheckvar VE_PRVT PRIVATE_TEMPLATE
 create_prvt()
 {
 	local TMP AVAIL NEEDED HEADER OPT
-	local TAR_OPT="--numeric-owner"
+	local TAR_OPT="--numeric-owner -Sp"
 
 	[ -d "$VE_PRVT" ] ||
 		vzerror "Destination directory does not exist: $VE_PRVT" ${VZ_FS_NEW_VE_PRVT}
@@ -64,8 +64,10 @@ create_prvt()
 
 	[ "$AVAIL" -ge "$NEEDED" ] ||
 		vzerror "Insufficient disk space in $VE_PRVT; available: $AVAIL, needed: $NEEDED" ${VZ_FS_NO_DISK_SPACE}
+	chmod 700 "$VE_PRVT"
 	tar -C "$VE_PRVT" ${TAR_OPT} ${OPT} -xf "$PRIVATE_TEMPLATE" ||
 		vzerror "Error in tar ${TAR_OPT} ${OPT} -xf $PRIVATE_TEMPLATE" ${VZ_FS_NEW_VE_PRVT}
+	chmod 755 "$VE_PRVT"
 }
 
 create_prvt

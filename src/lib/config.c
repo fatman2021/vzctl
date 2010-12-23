@@ -103,6 +103,8 @@ static vps_config config[] = {
 /*	Devices	*/
 {"DEVICES",	NULL, PARAM_DEVICES},
 {"DEVNODES",	NULL, PARAM_DEVNODES},
+{"PCI",		NULL, PARAM_PCI_ADD},
+{"",		NULL, PARAM_PCI_DEL},
 /*	fs param */
 {"VE_ROOT",	NULL, PARAM_ROOT},
 {"VE_PRIVATE",	NULL, PARAM_PRIVATE},
@@ -302,7 +304,7 @@ static int conf_store_ulong(list_head_t *conf, char *name, unsigned long *val)
 }
 
 /******************** Features *************************/
-static int parse_features(env_param *env, char *val)
+static int parse_features(env_param_t *env, char *val)
 {
 	int ret = 0;
 	char *token;
@@ -364,7 +366,7 @@ static int store_ioprio(vps_param *old_p, vps_param *vps_p,
 }
 
 /******************** Iptables *************************/
-static int parse_iptables(env_param *env, char *val)
+static int parse_iptables(env_param_t *env, char *val)
 {
 	char *token;
 	struct iptables_s *ipt;
@@ -399,7 +401,7 @@ static void store_iptables(unsigned long long ipt_mask, vps_config *conf,
 static int store_env(vps_param *old_p, vps_param *vps_p, vps_config *conf,
 	list_head_t *conf_h)
 {
-	env_param *env = &vps_p->res.env;
+	env_param_t *env = &vps_p->res.env;
 
 	switch (conf->id) {
 	case PARAM_IPTABLES:
@@ -864,6 +866,9 @@ static int store_dq(vps_param *old_p, vps_param *vps_p, vps_config *conf,
 	dq_param *param = &vps_p->res.dq;
 
 	switch (conf->id) {
+	case PARAM_DISK_QUOTA:
+		conf_store_yesno(conf_h, conf->name, param->enable);
+		break;
 	case PARAM_DISKSPACE:
 		if (param->diskspace == NULL)
 			break;
@@ -952,8 +957,11 @@ static int parse_dev(vps_param *vps_p, char *val)
 	for_each_strtok(token, val, " ") {
 		if (parse_devices_str(token, &dev))
 			return ERR_INVAL;
-		if (add_dev_param(&vps_p->res.dev, &dev))
+		if (add_dev_param(&vps_p->res.dev, &dev)) {
+			if (dev.name)
+				free(dev.name);
 			return ERR_NOMEM;
+		}
 	}
 
 	return 0;
@@ -1010,36 +1018,51 @@ static int store_dev(vps_param *old_p, vps_param *vps_p, vps_config *conf,
 static int parse_devnodes_str(const char *str, dev_res *dev)
 {
 	char *ch;
-	unsigned int len;
-	char buf[64];
+	unsigned int len, buf_len;
+	char *buf;
 	struct stat st;
+	int ret = ERR_INVAL;
 
-	if ((ch = strchr(str, ':')) == NULL)
+	if ((ch = strrchr(str, ':')) == NULL)
 		return ERR_INVAL;
 	ch++;
 	len = ch - str;
-	if (len > sizeof(dev->name))
-		return ERR_INVAL;
 	memset(dev, 0, sizeof(*dev));
+
+	dev->name = malloc(len);
+	if (dev->name == NULL)
+		return ERR_NOMEM;
 	snprintf(dev->name, len, "%s", str);
-	snprintf(buf, sizeof(buf), "/dev/%s", dev->name);
+
+	buf_len = 5 + len;
+	buf = alloca(buf_len);
+	if (buf == NULL) {
+		ret = ERR_NOMEM;
+		goto err;
+	}
+	snprintf(buf, buf_len, "/dev/%s", dev->name);
 	if (stat(buf, &st)) {
 		logger(-1, errno, "Incorrect device name %s", buf);
-		return ERR_INVAL;
+		goto err;
 	}
+
 	if (S_ISCHR(st.st_mode))
 		dev->type = S_IFCHR;
 	else if (S_ISBLK(st.st_mode))
 		dev->type = S_IFBLK;
 	else {
 		logger(-1, 0, "The %s is not block or character device", buf);
-		return ERR_INVAL;
+		goto err;
 	}
 	dev->dev = st.st_rdev;
 	dev->type |= VE_USE_MINOR;
 	if (parse_dev_perm(ch, &dev->mask))
-		return ERR_INVAL;
+		goto err;
 	return 0;
+err:
+	free(dev->name);
+	dev->name = NULL;
+	return ret;
 }
 
 static int parse_devnodes(vps_param *vps_p, char *val)
@@ -1050,8 +1073,11 @@ static int parse_devnodes(vps_param *vps_p, char *val)
 	for_each_strtok(token, val, " ") {
 		if (parse_devnodes_str(token, &dev))
 			return ERR_INVAL;
-		if (add_dev_param(&vps_p->res.dev, &dev))
+		if (add_dev_param(&vps_p->res.dev, &dev)) {
+			if (dev.name)
+				free(dev.name);
 			return ERR_NOMEM;
+		}
 	}
 
 	return 0;
@@ -1094,6 +1120,65 @@ static int store_devnodes(vps_param *old_p, vps_param *vps_p, vps_config *conf,
 		strcat(buf, "\"");
 	add_str_param(conf_h, buf);
 	return 0;
+}
+
+static int parse_pci(vps_param *vps_p, char *val, int id)
+{
+	int domain;
+	unsigned int bus;
+	unsigned int slot;
+	unsigned int func;
+	char *token;
+
+	int ret;
+	pci_param *pci;
+	char buf[64];
+
+	if (id == PARAM_PCI_ADD)
+		pci = &vps_p->res.pci;
+	else if (id == PARAM_PCI_DEL)
+		pci = &vps_p->del_res.pci;
+	else
+		return 0;
+
+	for_each_strtok(token, val, " ") {
+		ret = sscanf(token, "%x:%x:%x.%d", &domain, &bus, &slot, &func);
+		if (ret != 4) {
+			domain = 0;
+			ret = sscanf(token, "%x:%x.%d", &bus, &slot, &func);
+			if (ret != 3)
+				return ERR_INVAL;
+		}
+		snprintf(buf, sizeof(buf), "%04x:%02x:%02x.%d",
+						domain, bus, slot, func);
+		if (!find_str(&pci->list, buf))
+			add_str_param(&pci->list, buf);
+	}
+
+	return 0;
+}
+
+static int store_pci(vps_param *old_p, vps_param *vps_p, vps_config *conf,
+	list_head_t *conf_h)
+{
+	list_head_t pci;
+	int ret;
+
+	if (conf->id != PARAM_PCI_ADD)
+		return 0;
+
+	if (list_empty(&vps_p->res.pci.list) &&
+			list_empty(&vps_p->del_res.pci.list))
+		return 0;
+
+	list_head_init(&pci);
+	merge_str_list(0, &old_p->res.pci.list, &vps_p->res.pci.list,
+					&vps_p->del_res.pci.list, &pci);
+
+	ret = conf_store_strlist(conf_h, conf->name, &pci, 1);
+	free_str_param(&pci);
+
+	return ret;
 }
 
 static int store_misc(vps_param *old_p, vps_param *vps_p, vps_config *conf,
@@ -1814,6 +1899,10 @@ static int parse(envid_t veid, vps_param *vps_p, char *val, int id)
 	case PARAM_DEVICES:
 		ret = parse_dev(vps_p, val);
 		break;
+	case PARAM_PCI_ADD:
+	case PARAM_PCI_DEL:
+		ret = parse_pci(vps_p, val, id);
+		break;
 	case PARAM_DEVNODES:
 		ret = parse_devnodes(vps_p, val);
 		break;
@@ -1927,6 +2016,7 @@ static int store(vps_param *old_p, vps_param *vps_p, list_head_t *conf_h)
 		store_dq(old_p, vps_p, conf, conf_h);
 		store_dev(old_p, vps_p, conf, conf_h);
 		store_devnodes(old_p, vps_p, conf, conf_h);
+		store_pci(old_p, vps_p, conf, conf_h);
 		store_misc(old_p, vps_p, conf, conf_h);
 		store_cpu(old_p, vps_p, conf, conf_h);
 		store_meminfo(old_p, vps_p, conf, conf_h);
@@ -2200,6 +2290,7 @@ vps_param *init_vps_param()
 	list_head_init(&param->res.misc.nameserver);
 	list_head_init(&param->res.misc.searchdomain);
 	list_head_init(&param->res.dev.dev);
+	list_head_init(&param->res.pci.list);
 	list_head_init(&param->res.veth.dev);
 
 	list_head_init(&param->del_res.net.ip);
@@ -2209,6 +2300,7 @@ vps_param *init_vps_param()
 	list_head_init(&param->del_res.misc.nameserver);
 	list_head_init(&param->del_res.misc.searchdomain);
 	list_head_init(&param->del_res.dev.dev);
+	list_head_init(&param->del_res.pci.list);
 	list_head_init(&param->del_res.veth.dev);
 	param->res.meminfo.mode = -1;
 	param->res.io.ioprio = -1;
@@ -2356,6 +2448,11 @@ static void free_dev(dev_param *dev)
 	free_dev_param(dev);
 }
 
+static void free_pci(pci_param *pci)
+{
+	free_str_param(&pci->list);
+}
+
 static void free_cpu(cpu_param *cpu)
 {
 	FREE_P(cpu->units)
@@ -2392,6 +2489,7 @@ static void free_vps_res(vps_res *res)
 	free_net(&res->net);
 	free_misc(&res->misc);
 	free_dev(&res->dev);
+	free_pci(&res->pci);
 	free_cpu(&res->cpu);
 	free_dq(&res->dq);
 	free_cpt(&res->cpt);
@@ -2526,13 +2624,18 @@ static void merge_dev(dev_param *dst, dev_param *src)
 	}
 }
 
+static void merge_pci(pci_param *dst, pci_param *src)
+{
+	MERGE_LIST(list)
+}
+
 static void merge_cap(cap_param *dst, cap_param *src)
 {
 	MERGE_INT(on)
 	MERGE_INT(off)
 }
 
-static void merge_env(env_param *dst, env_param *src)
+static void merge_env(env_param_t *dst, env_param_t *src)
 {
 	MERGE_INT(veid)
 	MERGE_INT(ipt_mask)
@@ -2584,6 +2687,7 @@ static int merge_res(vps_res *dst, vps_res *src)
 	merge_cap(&dst->cap, &src->cap);
 	merge_dq(&dst->dq, &src->dq);
 	merge_dev(&dst->dev, &src->dev);
+	merge_pci(&dst->pci, &src->pci);
 	merge_env(&dst->env, &src->env);
 	merge_cpt(&dst->cpt, &src->cpt);
 	merge_meminfo(&dst->meminfo, &src->meminfo);
@@ -2603,7 +2707,6 @@ int merge_vps_param(vps_param *dst, vps_param *src)
 
 int merge_global_param(vps_param *dst, vps_param *src)
 {
-	MERGE_INT(res.dq.enable)
 	MERGE_INT(res.net.ipv6_net)
 	MERGE_INT(del_res.net.ipv6_net)
 	return 0;

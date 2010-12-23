@@ -28,17 +28,18 @@
 #include <linux/vzcalluser.h>
 
 #include "vzerror.h"
+#include "script.h"
 #include "util.h"
 #include "dev.h"
 #include "env.h"
 #include "logger.h"
+#include "script.h"
 
 static int dev_create(const char *root, dev_res *dev)
 {
 	char buf1[STR_SIZE];
 	char buf2[STR_SIZE];
 	struct stat st, st2;
-	int ret;
 	const char* udev_paths[] = {
 		"/lib/udev/devices",
 		"/etc/udev/devices",
@@ -49,16 +50,9 @@ static int dev_create(const char *root, dev_res *dev)
 		return 0;
 	if (check_var(root, "VE_ROOT is not set"))
 		return VZ_VE_ROOT_NOTSET;
-	/* If device does not exist inside CT get
-	* information from CT0 and create it
-	*/
+
+	/* Get device information from CT0 and create it in CT */
 	snprintf(buf1, sizeof(buf1), "%s/dev/%s", root, dev->name);
-	ret = lstat(buf1, &st);
-	if (ret && errno != ENOENT) {
-		logger(-1, errno, "Unable to stat device %s", buf1);
-		return VZ_SET_DEVICES;
-	} else if (!ret)
-		return 0;
 	snprintf(buf2, sizeof(buf2), "/dev/%s", dev->name);
 	if (stat(buf2, &st)) {
 		if (errno == ENOENT)
@@ -74,6 +68,7 @@ static int dev_create(const char *root, dev_res *dev)
 	}
 	if (make_dir(buf1, 0))
 		return VZ_SET_DEVICES;
+	unlink(buf1);
 	if (mknod(buf1, st.st_mode, st.st_rdev)) {
 		logger(-1, errno, "Unable to create device %s", buf1);
 		return VZ_SET_DEVICES;
@@ -87,6 +82,7 @@ static int dev_create(const char *root, dev_res *dev)
 						root, udev_paths[i],
 						dev->name);
 				make_dir(buf1, 0);
+				unlink(buf1);
 				mknod(buf1, st.st_mode, st.st_rdev);
 				break;
 			}
@@ -107,6 +103,37 @@ int set_devperm(vps_handler *h, envid_t veid, dev_res *dev)
 
 	if ((ret = ioctl(h->vzfd, VZCTL_SETDEVPERMS, &devperms)))
 		logger(-1, errno, "Unable to set devperms");
+
+	return ret;
+}
+
+struct vzctl_ve_configure_pci {
+	struct vzctl_ve_configure conf;
+	struct vzctl_ve_pci_dev dev;
+};
+
+static int set_pci(vps_handler *h, envid_t veid, int op, char *dev_id)
+{
+	int ret;
+	struct vzctl_ve_configure_pci conf_pci;
+	struct vzctl_ve_configure *conf = &conf_pci.conf;
+	struct vzctl_ve_pci_dev *dev = &conf_pci.dev;
+
+	sscanf(dev_id, "%x:%x:%x.%d", &dev->domain, &dev->bus,
+					&dev->slot, &dev->func);
+	conf->veid = veid;
+	if (op == ADD)
+		conf->key = VE_CONFIGURE_ADD_PCI_DEVICE;
+	else
+		conf->key = VE_CONFIGURE_DEL_PCI_DEVICE;
+	conf->val = 0;
+	conf->size = sizeof(struct vzctl_ve_pci_dev);
+
+	if ((ret = ioctl(h->vzfd, VZCTL_VE_CONFIGURE, &conf_pci))) {
+		if (errno == EEXIST)
+			return 0;
+		logger(-1, errno, "Unable to move pci device %s", dev_id);
+	}
 
 	return ret;
 }
@@ -155,20 +182,19 @@ int add_dev_param(dev_param *dev, dev_res *res)
 		return -1;
 	memcpy(tmp, res, sizeof(*tmp));
 	list_add_tail(&tmp->list, &dev->dev);
+	res->name = NULL;
 
 	return 0;
 }
 
 static void free_dev(list_head_t  *head)
 {
-	dev_res *cur;
+	dev_res *cur, *tmp;
 
-	while(!list_empty(head)) {
-		list_for_each(cur, head, list) {
-			list_del(&cur->list);
-			free(cur);
-			break;
-		}
+	list_for_each_safe(cur, tmp, head, list) {
+		list_del(&cur->list);
+		free(cur->name);
+		free(cur);
 	}
 	list_head_init(head);
 }
@@ -176,4 +202,56 @@ static void free_dev(list_head_t  *head)
 void free_dev_param(dev_param *dev)
 {
 	free_dev(&dev->dev);
+}
+
+int run_pci_script(envid_t veid, int op, list_head_t *pci_h)
+{
+	char *argv[3];
+	char *envp[10];
+	char *script;
+	int ret;
+	char buf[STR_SIZE];
+	int i = 0;
+
+	if (list_empty(pci_h))
+		return 0;
+	snprintf(buf, sizeof(buf), "VEID=%d", veid);
+	envp[i++] = strdup(buf);
+	snprintf(buf, sizeof(buf), "ADD=%d", op == ADD);
+	envp[i++] = strdup(buf);
+	envp[i++] = list2str("PCI", pci_h);
+	envp[i++] = strdup(ENV_PATH);
+	envp[i] = NULL;
+	script = VPS_PCI;
+	argv[0] = script;
+	argv[1] = NULL;
+	ret = run_script(script, argv, envp, 0);
+	free_arg(envp);
+
+	return ret;
+}
+
+int vps_set_pci(vps_handler *h, envid_t veid, int op, const char *root,
+		pci_param *pci)
+{
+	int ret = 0;
+	list_head_t *pci_h = &pci->list;
+	str_param *res;
+
+	if (list_empty(pci_h))
+		return 0;
+
+	if (!vps_is_run(h, veid)) {
+		logger(-1, 0, "Unable to configure PCI devices: "
+				"container is not running");
+		return VZ_VE_NOT_RUNNING;
+	}
+	logger(0, 0, "Setting PCI devices");
+
+	list_for_each(res, pci_h, list)
+		if ((ret = set_pci(h, veid, op, res->val)))
+			break;
+	if (!ret)
+		ret = run_pci_script(veid, op, pci_h);
+	return ret;
 }

@@ -1,4 +1,4 @@
-.TH vzctl 8 "2 Nov 2010" "OpenVZ" "Containers"
+.TH vzctl 8 "16 Nov 2010" "OpenVZ" "Containers"
 .SH NAME
 vzctl \- utility to control an OpenVZ container.
 .SH SYNOPSIS
@@ -10,7 +10,7 @@ vzctl [\fIflags\fR] \fBset\fR \fICTID\fR \fIparameters\fR [\fB--save\fR]
 .PP
 vzctl [\fIflags\fR] \fBdestroy\fR | \fBmount\fR | \fBumount\fR |
 \fBstart\fR | \fBstop\fR | \fBrestart\fR |
-\fBstatus\fR \fICTID\fR
+\fBstatus\fR | \fBquotaon\fR | \fBquotaoff\fR | \fBquotainit\fR \fICTID\fR
 .PP
 vzctl [\fIflags\fR] \fBexec\fR | \fBexec2\fR \fICTID\fR
 \fIcommand\fR [\fIarg\fR ...]
@@ -423,6 +423,10 @@ delete network device from a specified container
 .TP
 \fBDisk quota parameters\fR
 .TP
+\fB--diskquota\fR \fByes\fR|\fBno\fR
+allows to enable or disable disk quota for a container. By default,
+a global value (\fBDISK_QUOTA\fR) from \fBvz.conf\fR(5) is used.
+.TP
 \fB--diskspace\fR \fInum\fR[:\fInum\fR]
 sets soft and hard disk quota limits, in blocks. First parameter is soft limit,
 second is hard limit. One block is currently equal to 1Kb.
@@ -492,6 +496,20 @@ is created in a container by \fBvzctl\fR. Example:
 \fB--devices\fR \fBb|c\fR:\fImajor\fR:\fIminor\fR|\fBall\fR:\fB[r][w][q]|none\fR
 Give the container an access to a \fBb\fRlock or \fBc\fRharacter device
 designated by its \fImajor\fR and \fIminor\fR numbers. Device file have to be created manually.
+
+.TP
+\fBPCI device management\fR
+.TP
+\fB--pci_add\fR [\fIdomain\fB:\fR]\fIbus\fB:\fIslot\fB.\fIfunc\fR
+Give the container an access to a specified PCI device. All numbers are
+hexadecimal (as printed by \fBlspci\fR(8) in the first column).
+.TP
+\fB--pci_del\fR [\fIdomain\fB:\fR]\fIbus\fB:\fIslot\fB.\fIfunc\fR
+Delete a PCI device from the container.
+.TP
+Note that \fBvps-pci\fR configuration script is executed by \fBvzctl\fR
+then configuring PCI devices. The script is usually located at
+\fB/usr/lib[64]/vzctl/scripts/\fR.
 
 .TP
 \fBFeatures management\fR
@@ -626,6 +644,15 @@ to execution of \fBumount\fR and \fBpostumount\fR action scripts
 (see \fBACTION SCRIPTS\fR below).
 
 Note that \fBstop\fR does \fBumount\fR automatically.
+.IP "\fBquotaon\fR \fIctid\fR" 4
+Turn disk quota on. Not that \fBmount\fR and \fBstart\fR does that
+automatically.
+.IP "\fBquotaoff\fR \fIctid\fR" 4
+Turn disk quota off. Not that \fBumount\fR and \fBstop\fR
+does that automatically.
+.IP "\fBquotainit\fR \fIctid\fR" 4
+Initialize disk quota (i.e. run \fBvzquota init\fR) with the parameters
+taken from the CT configuration file \fBctid.conf\fR(5).
 .IP "\fBexec\fR \fICTID\fR \fIcommand\fR" 4
 Executes \fIcommand\fR in a container. Environment variables are not set
 inside the container.
@@ -801,10 +828,12 @@ Unable to unmount container
 Unable to delete a container
 .IP 53
 Container private area not exist
+.IP 60
+\fBvzquota on\fR failed
 .IP 61
 \fBvzquota init\fR failed
 .IP 62
-\fBvzquota on\fB or \fBvzquota setlimit\fR failed
+\fBvzquota setlimit\fR failed
 .IP 63
 Parameter \fBDISKSPACE\fR not set
 .IP 64

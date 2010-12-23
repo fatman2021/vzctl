@@ -438,6 +438,14 @@ int check_set_mode(vps_handler *h, envid_t veid, int setmode, int apply,
 			found++;
 		}
 	}
+	/* Enabling/disabling DISK_QUOTA */
+	if ( (new_res->dq.enable) &&
+			(new_res->dq.enable != old_res->dq.enable) ) {
+		if (loud)
+			logger(-1, 0, "Unable to switch DISK_QUOTA on or off "
+					"on a running container");
+		found++;
+	}
 
 	if (!found)
 		return 0;
@@ -544,6 +552,8 @@ static int parse_set_opt(envid_t veid, int argc, char *argv[],
 	/*	Devices	*/
 	{"devices",	required_argument, NULL, PARAM_DEVICES},
 	{"devnodes",	required_argument, NULL, PARAM_DEVNODES},
+	{"pci_add",	required_argument, NULL, PARAM_PCI_ADD},
+	{"pci_del",	required_argument, NULL, PARAM_PCI_DEL},
 	/*	fs param */
 	{"root",	required_argument, NULL, PARAM_ROOT},
 	{"private",	required_argument, NULL, PARAM_PRIVATE},
@@ -560,6 +570,7 @@ static int parse_set_opt(envid_t veid, int argc, char *argv[],
 	{"setmode",	required_argument, NULL, PARAM_SETMODE},
 	{"disabled",	required_argument, NULL, PARAM_DISABLED},
 	/*	quota */
+	{"diskquota",	required_argument, NULL, PARAM_DISK_QUOTA},
 	{"diskspace",	required_argument, NULL, PARAM_DISKSPACE},
 	{"diskinodes",	required_argument, NULL, PARAM_DISKINODES},
 	{"quotatime",	required_argument, NULL, PARAM_QUOTATIME},
@@ -1070,15 +1081,26 @@ int run_action(envid_t veid, act_t action, vps_param *g_p, vps_param *vps_p,
 	case ACTION_RUNSCRIPT:
 		ret = vps_run_script(h, veid, argv[0], g_p);
 		break;
+
+#define CHECK_DQ(r) if (g_p->res.dq.enable != YES) { \
+	ret = r; \
+	logger(0, 0, "Disk quota is not enabled, skipping operation"); \
+	break; \
+}
 	case ACTION_QUOTAON:
+		CHECK_DQ(VZ_DQ_ON)
 		ret = vps_quotaon(veid, g_p->res.fs.private, &g_p->res.dq);
 		break;
 	case ACTION_QUOTAOFF:
+		CHECK_DQ(VZ_DQ_OFF)
 		ret = vps_quotaoff(veid, &g_p->res.dq);
 		break;
 	case ACTION_QUOTAINIT:
+		CHECK_DQ(VZ_DQ_INIT)
 		ret = quota_init(veid, g_p->res.fs.private, &g_p->res.dq);
 		break;
+#undef CHECK_DQ
+
 	case ACTION_CUSTOM:
 		ret = mod_setup(h, veid, 0, 0, &g_action, g_p);
 		break;
