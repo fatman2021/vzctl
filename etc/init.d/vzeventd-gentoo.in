@@ -1,20 +1,24 @@
 #!/sbin/runscript
 
+CONFIG_FILE="/etc/conf.d/vz"
+
 depend() {
 	use net
 	before vz
 }
 
 start() {
-	ebegin "Loading vzevent module"
-	modprobe -r vzevent >/dev/null 2>&1
-	modprobe vzevent reboot_event=1 >/dev/null 2>&1
-	rc=$?
-	if [ ${rc} -ne 0 ]; then
-		eend ${rc} "failed"
-		return ${rc}
+	if [ ${MODULES_DISABLED} != "yes" ]; then
+		ebegin "Loading vzevent module"
+		modprobe -r vzevent >/dev/null 2>&1
+		modprobe vzevent reboot_event=1 >/dev/null 2>&1
+		rc=$?
+		if [ ${rc} -ne 0 ]; then
+			eend ${rc} "failed"
+			return ${rc}
+		fi
+		eend ${rc}
 	fi
-	eend ${rc}
 
 	ebegin "Starting vzeventd"
 	start-stop-daemon --start --exec /usr/sbin/vzeventd 
