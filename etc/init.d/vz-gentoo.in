@@ -4,7 +4,8 @@
 # $Header: /var/www/viewcvs.gentoo.org/raw_cvs/gentoo-x86/sys-cluster/vzctl/files/vz-3.0.10.initd,v 1.2 2006/07/09 10:29:24 phreak Exp $
 
 depend() {
-	after net vzeventd
+	need vzeventd
+	after net
 }
 
 check_config() {
@@ -85,7 +86,7 @@ start_net() {
 	eend $?
 
 	if [ "x$(/sbin/sysctl -n -e net.ipv4.ip_forward)" != "x1" ]; then
-		ewarn "It looks like you have ip forwarding disabled. To make networking"
+		ewarn "It looks like you have ip forwarding disabled. To make venet networking"
 		ewarn "available for containers, please, run sysctl -w net.ipv4.ip_forward=1"
 	fi
 }
