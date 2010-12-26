@@ -15,9 +15,8 @@
 #  along with this program; if not, write to the Free Software
 #  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 #
-#
-# This script configures IP alias(es) inside Gentoo based CT with
-# baselayout-1/openrc used as services/startup/shutdown system.
+# This script configures IP alias(es) inside Funtoo-based CT with
+# OpenRC used as services/startup/shutdown system.
 #
 # Parameters are passed in environment variables.
 # Required parameters:
@@ -28,6 +27,11 @@
 #                     starting | stopping | running | stopped
 #   IPDELALL	  - delete all old interfaces
 #
+# Note that modern versions of vzctl runs this script even if there
+# are not venet IPs to add to the CT, which resulted in netif.venet0
+# being created even when venet wasn't enabled for this container.
+# This could indicate an upstream bug.
+
 VENET_DEV=venet0
 IFCFG=/etc/conf.d/netif.${VENET_DEV}
 SCRIPT=/etc/runlevels/default/netif.${VENET_DEV}
@@ -53,9 +57,23 @@ function set_rc()
 	rc-update add netif.${VENET_DEV} default &>/dev/null
 }
 
+unset_rc()
+{
+	# used for disabling venet if we are using veth and no IPs are specified
+	rc update del netif.venet0 default &>/dev/null
+	rm -f /etc/init.d/netif.venet0
+	rm -f /etc/conf.d/netif.venet0
+	ip link set venet0 down > /dev/null 2>&1
+}
+
 function init_netconfig()
 {
-	set_rc
+	if [ "$IP_ADDR" != "" ]
+	then
+		set_rc
+	else
+		unset_rc
+	fi
 	# Set up /etc/hosts
 	if [ ! -f ${HOSTFILE} ]; then
 		echo "127.0.0.1 localhost.localdomain localhost" > $HOSTFILE
