@@ -257,7 +257,7 @@ int vps_ip_configure(vps_handler *h, envid_t veid, dist_actions *actions,
 	const char *root, int op, net_param *net, int state)
 {
 	char *envp[6];
-	char *str;
+	char *str = list2str("IP_ADDR", &net->ip);
 	const char *script = NULL;
 	int ret, i;
 	char vps_state[32];
@@ -265,6 +265,8 @@ int vps_ip_configure(vps_handler *h, envid_t veid, dist_actions *actions,
 	const char *str_state;
 	char *delall = "IPDELALL=yes";
 
+	if (str == NULL)
+		return 0;
 	if (list_empty(&net->ip) && !net->delall && state != STATE_STARTING)
 		return 0;
 	if (actions == NULL)
@@ -291,9 +293,7 @@ int vps_ip_configure(vps_handler *h, envid_t veid, dist_actions *actions,
 	str_state = state2str(state);
 	snprintf(vps_state, sizeof(vps_state), "VE_STATE=%s", str_state);
 	envp[i++] = vps_state;
-	str = list2str("IP_ADDR", &net->ip);
-	if (str != NULL)
-		envp[i++] = str;
+	envp[i++] = str;
 	if (net->delall)
 		envp[i++] = delall;
 	if (net->ipv6_net == YES)
