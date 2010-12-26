@@ -60,7 +60,7 @@ function set_rc()
 unset_rc()
 {
 	# used for disabling venet if we are using veth and no IPs are specified
-	rc update del netif.venet0 default &>/dev/null
+	rc-update del netif.venet0 default &>/dev/null
 	rm -f /etc/init.d/netif.venet0
 	rm -f /etc/conf.d/netif.venet0
 	ip link set venet0 down > /dev/null 2>&1
