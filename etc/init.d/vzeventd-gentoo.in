@@ -18,6 +18,8 @@ start() {
 			return ${rc}
 		fi
 		eend ${rc}
+	else
+		echo 1 > /sys/module/vzevent/parameters/reboot_event
 	fi
 
 	ebegin "Starting vzeventd"
