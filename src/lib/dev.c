@@ -46,7 +46,7 @@ static int dev_create(const char *root, dev_res *dev)
 		NULL};
 	int i;
 
-	if (!dev->name[0])
+	if (!dev->name)
 		return 0;
 	if (check_var(root, "VE_ROOT is not set"))
 		return VZ_VE_ROOT_NOTSET;
@@ -93,7 +93,6 @@ static int dev_create(const char *root, dev_res *dev)
 
 int set_devperm(vps_handler *h, envid_t veid, dev_res *dev)
 {
-	int ret;
 	struct vzctl_setdevperms devperms;
 
 	devperms.veid = veid;
@@ -101,10 +100,12 @@ int set_devperm(vps_handler *h, envid_t veid, dev_res *dev)
 	devperms.mask = dev->mask;
 	devperms.type = dev->type;
 
-	if ((ret = ioctl(h->vzfd, VZCTL_SETDEVPERMS, &devperms)))
-		logger(-1, errno, "Unable to set devperms");
+	if (ioctl(h->vzfd, VZCTL_SETDEVPERMS, &devperms)) {
+		logger(-1, errno, "Error setting device permissions");
+		return VZ_SET_DEVICES;
+	}
 
-	return ret;
+	return 0;
 }
 
 struct vzctl_ve_configure_pci {
@@ -162,12 +163,13 @@ int vps_set_devperm(vps_handler *h, envid_t veid, const char *root,
 	}
 	logger(0, 0, "Setting devices");
 	list_for_each(res, dev_h, list) {
-		if (res->name[0])
+		if (res->name)
 			if ((ret = dev_create(root, res)))
-				break;
+				goto out;
 		if ((ret = set_devperm(h, veid, res)))
-			break;
+			goto out;
 	}
+out:
 	return ret;
 }
 
