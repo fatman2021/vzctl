@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2000-2010, Parallels, Inc. All rights reserved.
+ *  Copyright (C) 2000-2011, Parallels, Inc. All rights reserved.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -75,7 +75,8 @@ void usage(int rc)
 "   [--ipadd <addr>] [--ipdel <addr>|all] [--hostname <name>]\n"
 "   [--nameserver <addr>] [--searchdomain <name>]\n"
 "   [--onboot yes|no] [--bootorder <N>]\n"
-"   [--userpasswd <user>:<passwd>] [--cpuunits <N>] [--cpulimit <N>] [--cpus <N>]\n"
+"   [--userpasswd <user>:<passwd>]\n"
+"   [--cpuunits <N>] [--cpulimit <N>] [--cpus <N>] [--cpumask <cpus>]\n"
 "   [--diskspace <soft>[:<hard>]] [--diskinodes <soft>[:<hard>]]\n"
 "   [--quotatime <N>] [--quotaugidlimit <N>]\n"
 "   [--noatime yes|no] [--capability <name>:on|off ...]\n"
@@ -113,7 +114,6 @@ int main(int argc, char *argv[], char *envp[])
 {
 	act_t action = -1;
 	int verbose = 0;
-	int verbose_tmp;
 	int verbose_custom = 0;
 	int quiet = 0;
 	int veid, ret, skiplock = 0;
@@ -139,22 +139,7 @@ int main(int argc, char *argv[], char *envp[])
 		opt = argv[1];
 
 		if (!strcmp(opt, "--verbose")) {
-			if (argc > 2 &&
-			    !parse_int(argv[2], &verbose_tmp))
-			{
-				verbose += verbose_tmp;
-				argc--; argv++;
-			} else {
-				verbose++;
-			}
-			verbose_custom = 1;
-		} else if (!strncmp(opt, "--verbose=", 10)) {
-			if (parse_int(opt + 10, &verbose_tmp)) {
-				fprintf(stderr, "Invalid value for"
-					" --verbose\n");
-				exit(VZ_INVALID_PARAMETER_VALUE);
-			}
-			verbose += verbose_tmp;
+			verbose++;
 			verbose_custom = 1;
 		} else if (!strcmp(opt, "--quiet"))
 			quiet = 1;
@@ -170,7 +155,7 @@ int main(int argc, char *argv[], char *envp[])
 	if (argc <= 1)
 		usage(VZ_INVALID_PARAMETER_SYNTAX);
 	action_nm = argv[1];
-	init_log(NULL, 0, 1, verbose, 0, NULL);
+	init_log(NULL, 0, 1, verbose, quiet, NULL);
 	if (!strcmp(argv[1], "set")) {
 		init_modules(&g_action, "set");
 		action = ACTION_SET;
@@ -233,7 +218,7 @@ int main(int argc, char *argv[], char *envp[])
 	if (parse_int(argv[2], &veid)) {
 		name = strdup(argv[2]);
 		veid = get_veid_by_name(name);
-		if (veid < 0 || veid == INT_MAX) {
+		if (veid < 0 || veid > VEID_MAX) {
 			fprintf(stderr, "Bad CT ID %s\n", argv[2]);
 			ret = VZ_INVALID_PARAMETER_VALUE;
 			goto error;

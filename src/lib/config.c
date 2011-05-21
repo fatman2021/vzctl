@@ -36,6 +36,7 @@
 
 #include "logger.h"
 #include "list.h"
+#include "bitmap.h"
 #include "config.h"
 #include "vzctl_param.h"
 #include "vzerror.h"
@@ -118,6 +119,7 @@ static vps_config config[] = {
 {"CPUUWEIGHT",	NULL, PARAM_CPUWEIGHT},
 {"CPULIMIT",	NULL, PARAM_CPULIMIT},
 {"CPUS",	NULL, PARAM_VCPUS},
+{"CPUMASK",	NULL, PARAM_CPUMASK},
 /* create param	*/
 {"ONBOOT",	NULL, PARAM_ONBOOT},
 {"CONFIGFILE",	NULL, PARAM_CONFIG},
@@ -142,7 +144,8 @@ static vps_config config[] = {
 {NULL,		NULL, -1}
 };
 
-const vps_config *conf_get_by_name(const vps_config *conf, const char *name)
+static const vps_config *conf_get_by_name(const vps_config *conf,
+		const char *name)
 {
 	const vps_config *p;
 
@@ -158,7 +161,7 @@ const vps_config *conf_get_by_name(const vps_config *conf, const char *name)
 	return NULL;
 }
 
-const vps_config *conf_get_by_id(const vps_config *conf, int id)
+static const vps_config *conf_get_by_id(const vps_config *conf, int id)
 {
 	const vps_config *p;
 
@@ -170,7 +173,7 @@ const vps_config *conf_get_by_id(const vps_config *conf, int id)
 	return NULL;
 }
 
-int opt_get_by_id(struct option *opt, int id)
+static int opt_get_by_id(struct option *opt, int id)
 {
 	struct option *p;
 
@@ -252,6 +255,28 @@ static int conf_parse_ulong(unsigned long **dst, const char *valstr)
 	return 0;
 }
 
+static int conf_parse_bitmap(unsigned long **dst, int nmaskbits,
+			     const char *valstr)
+{
+	if (*dst != NULL)
+		return ERR_DUP;
+
+	*dst = alloc_bitmap(nmaskbits);
+	if (*dst == NULL)
+		return ERR_NOMEM;
+
+	if (!strcmp(valstr, "all")) {
+		bitmap_set_all(*dst, nmaskbits);
+		return 0;
+	}
+	if (bitmap_parse(valstr, *dst, nmaskbits) != 0) {
+		free(*dst);
+		*dst = NULL;
+		return ERR_INVAL;
+	}
+	return 0;
+}
+
 static int conf_store_strlist(list_head_t *conf, char *name, list_head_t *val,
 		int allow_empty)
 {
@@ -303,6 +328,32 @@ static int conf_store_ulong(list_head_t *conf, char *name, unsigned long *val)
 	return conf_store_str(conf, name, buf);
 }
 
+static int conf_store_bitmap(list_head_t *conf, char *name,
+			     unsigned long *val, int nmaskbits)
+{
+	int ret;
+	char *buf;
+	unsigned int buflen = nmaskbits * 2;
+
+	if (val == NULL)
+		return 0;
+
+	if (bitmap_find_first_zero_bit(val, nmaskbits) == nmaskbits) {
+		conf_store_str(conf, name, "all");
+		return 0;
+	}
+
+	buf = malloc(buflen);
+	if (buf == NULL)
+		return ERR_NOMEM;
+
+	bitmap_snprintf(buf, buflen, val, nmaskbits);
+	ret = conf_store_str(conf, name, buf);
+
+	free(buf);
+	return ret;
+}
+
 /******************** Features *************************/
 static int parse_features(env_param_t *env, char *val)
 {
@@ -337,7 +388,7 @@ static void store_features(unsigned long long mask, unsigned long long known,
 	add_str_param(conf_h, buf);
 }
 
-int parse_ioprio(int id, io_param *io, char *val)
+static int parse_ioprio(int id, io_param *io, char *val)
 {
 	if (parse_int(val, &io->ioprio))
 		return ERR_INVAL;
@@ -504,7 +555,7 @@ static int parse_twoul_sfx(const char *str, unsigned long *val, int divisor)
 }
 
 /******************** totalmem *************************/
-int parse_meminfo(meminfo_param *param, const char *val)
+static int parse_meminfo(meminfo_param *param, const char *val)
 {
 	int mode;
 	char mode_nm[32];
@@ -553,7 +604,7 @@ static int store_meminfo(vps_param *old_p, vps_param *vps_p, vps_config *conf,
 	return 0;
 }
 
-int parse_ub(vps_param *vps_p, const char *val, int id, int divisor)
+static int parse_ub(vps_param *vps_p, const char *val, int id, int divisor)
 {
 	int ret;
 	ub_res res;
@@ -672,7 +723,7 @@ static int store_cap(vps_param *old_p, vps_param *vps_p, vps_config *conf,
 }
 /********************** Network ************************/
 
-int check_ip_dot(char *ip)
+static int check_ip_dot(char *ip)
 {
 	int i;
 	char *str = ip;
@@ -768,7 +819,7 @@ static int check_netdev(const char *devname)
 	return 0;
 }
 
-int add_netdev(net_param *net, char *val)
+static int add_netdev(net_param *net, char *val)
 {
 	char *token;
 
@@ -1251,6 +1302,16 @@ static int parse_cpulimit(unsigned long **param, const char *str)
 	return 0;
 }
 
+static inline int parse_cpumask(cpumask_t **dst, const char *str)
+{
+	return conf_parse_bitmap((unsigned long **)dst, CPUMASK_NBITS, str);
+}
+
+static inline int store_cpumask(list_head_t *conf, char *name, cpumask_t *val)
+{
+	return conf_store_bitmap(conf, name, cpumask_bits(val), CPUMASK_NBITS);
+}
+
 static int store_cpu(vps_param *old_p, vps_param *vps_p, vps_config *conf,
 	list_head_t *conf_h)
 {
@@ -1268,6 +1329,9 @@ static int store_cpu(vps_param *old_p, vps_param *vps_p, vps_config *conf,
 		break;
 	case PARAM_VCPUS:
 		conf_store_ulong(conf_h, conf->name, cpu->vcpus);
+		break;
+	case PARAM_CPUMASK:
+		store_cpumask(conf_h, conf->name, cpu->mask);
 		break;
 	}
 	return 0;
@@ -1290,7 +1354,8 @@ static int parse_mac_filter_cmd (veth_dev *dev, char *str)
 	return 0;
 }
 
-void generate_veth_name(int veid, char *dev_name_ve,  char *dev_name, int len)
+static void generate_veth_name(int veid, char *dev_name_ve,
+		char *dev_name, int len)
 {
 	char *name;
 	int id = 0;
@@ -1606,8 +1671,8 @@ static int parse_netif_str_cmd(envid_t veid, const char *str, veth_dev *dev)
 		}
 		err = parse_hwaddr(tmp, dev->dev_addr_ve);
 		if (err) {
-		  logger(-1, 0, "Invalid container MAC address format");
-		  return ERR_INVAL;
+			logger(-1, 0, "Invalid container MAC address format");
+			return ERR_INVAL;
 		}
 	} else {
 		generate_mac(veid, dev->dev_name_ve, dev->dev_addr_ve);
@@ -1730,7 +1795,7 @@ static int parse(envid_t veid, vps_param *vps_p, char *val, int id)
 	if (!_page_size) {
 		_page_size = get_pagesize();
 		if (_page_size < 0)
-			return -1;
+			return ERR_OTHER;
 	}
 	switch (id) {
 	case PARAM_CONFIG:
@@ -1795,17 +1860,17 @@ static int parse(envid_t veid, vps_param *vps_p, char *val, int id)
 		break;
 	case PARAM_LOGLEVEL:
 		if (parse_int(val, &int_id))
-			break;
+			return ERR_INVAL;
 		vps_p->log.level = int_id;
 		break;
 	case PARAM_VERBOSE:
 		if (vps_p->log.verbose != NULL)
-			break;
+			return ERR_DUP;
 		if (parse_int(val, &int_id))
-			break;
+			return ERR_INVAL;
 		vps_p->log.verbose = malloc(sizeof(*vps_p->log.verbose));
 		if (vps_p->log.verbose == NULL)
-			return VZ_RESOURCE_ERROR;
+			return ERR_NOMEM;
 		*vps_p->log.verbose = int_id;
 		break;
 	case PARAM_IPTABLES:
@@ -1884,15 +1949,15 @@ static int parse(envid_t veid, vps_param *vps_p, char *val, int id)
 		break;
 	case PARAM_DISKSPACE:
 		if (vps_p->res.dq.diskspace != NULL)
-			break;
+			return ERR_DUP;
 		if (parse_dq(&vps_p->res.dq.diskspace, val, 1))
-			ret = ERR_INVAL;
+			return ERR_INVAL;
 		break;
 	case PARAM_DISKINODES:
 		if (vps_p->res.dq.diskinodes != NULL)
-			break;
+			return ERR_DUP;
 		if (parse_dq(&vps_p->res.dq.diskinodes, val, 0))
-			ret = ERR_INVAL;
+			return ERR_INVAL;
 		break;
 	case PARAM_QUOTATIME:
 		ret = conf_parse_ulong(&vps_p->res.dq.exptime, val);
@@ -1928,11 +1993,14 @@ static int parse(envid_t veid, vps_param *vps_p, char *val, int id)
 		break;
 	case PARAM_CPULIMIT:
 		if (vps_p->res.cpu.limit != NULL)
-			break;
+			return ERR_DUP;
 		ret = parse_cpulimit(&vps_p->res.cpu.limit, val);
 		break;
 	case PARAM_VCPUS:
 		ret = conf_parse_ulong(&vps_p->res.cpu.vcpus, val);
+		break;
+	case PARAM_CPUMASK:
+		ret = parse_cpumask(&vps_p->res.cpu.mask, val);
 		break;
 	case PARAM_MEMINFO:
 		ret = parse_meminfo(&vps_p->res.meminfo, val);
@@ -1943,7 +2011,7 @@ static int parse(envid_t veid, vps_param *vps_p, char *val, int id)
 		break;
 	case PARAM_NETIF_ADD:
 		if (!list_empty(&vps_p->res.veth.dev))
-			break;
+			return ERR_DUP;
 		ret = parse_netif(veid, &vps_p->res.veth, val);
 		break;
 	case PARAM_NETIF_ADD_CMD:
@@ -1978,7 +2046,7 @@ static int parse(envid_t veid, vps_param *vps_p, char *val, int id)
 		break;
 	case PARAM_NAME:
 		if (vps_p->res.name.name != NULL)
-			break;
+			return ERR_DUP;
 		if (check_name(val))
 			return ERR_INVAL;
 		ret = conf_parse_str(&vps_p->res.name.name, val);
@@ -2076,25 +2144,39 @@ int vps_parse_config(envid_t veid, char *path, vps_param *vps_p,
 		if (!ret) {
 			continue;
 		} else if (ret == ERR_INVAL_SKIP) {
+			/* Warning is printed by parse() */
 			continue;
 		} else if (ret == ERR_LONG_TRUNC) {
-			logger(-1, 0, "Warning: too large value for %s=%s"
-				" was truncated", ltoken, rtoken);
+			logger(-1, 0, "Warning at %s:%d: too large value "
+				"for %s (\"%s\"), truncated",
+				path, line, ltoken, rtoken);
 		} else if (ret == ERR_DUP) {
-			logger(-1, 0, "Warning: dup for %s=%s in line %d"
-				" is ignored", ltoken, rtoken, line);
+			logger(-1, 0, "Warning at %s:%d: duplicate "
+				"for %s (\"%s\"), ignored",
+				path, line, ltoken, rtoken);
 		} else if (ret == ERR_INVAL) {
-			logger(-1, 0, "Invalid value for %s=%s, skipped",
-				ltoken, rtoken);
+			logger(-1, 0, "Warning at %s:%d: invalid value "
+				"for %s (\"%s\"), skipped",
+				path, line, ltoken, rtoken);
 		} else if (ret == ERR_UNK) {
-			logger(-1, 0, "Unknown parameter %s, skipped", ltoken);
+			logger(-1, 0, "Warning at %s:%d: unknown parameter "
+				"%s (\"%s\"), skipped",
+				path, line, ltoken, rtoken);
 		} else if (ret == ERR_NOMEM) {
-			logger(-1, 0, "Not enough memory");
+			logger(-1, ENOMEM, "Error while parsing %s:%d",
+				path, line);
 			err = VZ_RESOURCE_ERROR;
 			break;
+		} else if (ret == ERR_OTHER) {
+			logger(-1, 0, "System error while parsing %s:%d",
+				path, line);
+			err = VZ_SYSTEM_ERROR;
+			break;
 		} else {
-			logger(-1, 0, "Unknown exit code %d on parse %s",
-				ret, ltoken);
+			logger(-1, 0, "Internal error at %s:%d: "
+				"bad return value %d from parse(), "
+				"parameter %s (\"%s\")", path, line,
+				ret, ltoken, rtoken);
 		}
 	}
 	fclose(fp);
@@ -2136,7 +2218,7 @@ static int write_conf(char *fname, list_head_t *head)
 	if (file == NULL) {
 		if (errno != ENOENT) {
 			logger(-1, errno, "Unable to resolve path %s", fname);
-			return 1;
+			return ret;
 		}
 		file = vz_strdup(fname);
 		if (!file)
@@ -2213,7 +2295,7 @@ int vps_save_config(envid_t veid, char *path, vps_param *new_p,
 {
 	vps_param *tmp_old_p = NULL;
 	list_head_t conf, new_conf;
-	int ret, n;
+	int ret = VZ_CONFIG_SAVE_ERROR;
 
 	list_head_init(&conf);
 	list_head_init(&new_conf);
@@ -2222,44 +2304,30 @@ int vps_save_config(envid_t veid, char *path, vps_param *new_p,
 		vps_parse_config(veid, path, tmp_old_p, action);
 		old_p = tmp_old_p;
 	}
-	if ((ret = read_conf(path, &conf)))
-		return ret;
-	n = store(old_p, new_p, &new_conf);
+	if (read_conf(path, &conf) != 0)
+		goto err_read;
+	store(old_p, new_p, &new_conf);
 	if (action != NULL)
 		mod_save_config(action, &new_conf);
-	if ((ret = vps_merge_conf(&conf, &new_conf)) > 0)
-		ret = write_conf(path, &conf);
+	if (vps_merge_conf(&conf, &new_conf) == 0)
+	{
+		/* Nothing to save */
+		logger(0, 0, "No changes in CT configuration, not saving");
+		ret = 0;
+		goto out;
+	}
+
+	ret = write_conf(path, &conf);
+	if (ret == 0)
+		logger(0, 0, "Saved parameters "
+				"for CT %d", veid);
+out:
 	free_str_param(&conf);
 	free_str_param(&new_conf);
+err_read:
 	free_vps_param(tmp_old_p);
 
 	return ret;
-}
-
-int vps_remove_cfg_param(envid_t veid, char *path, char *name)
-{
-	list_head_t conf;
-	conf_struct *line;
-	int ret, found;
-
-	list_head_init(&conf);
-	if ((ret = read_conf(path, &conf)))
-		return ret;
-	if (list_empty(&conf))
-		return 0;
-	found = 0;
-	while ((line = find_conf_line(&conf, name, '=')) != NULL) {
-		free(line->val);
-		list_del(&line->list);
-		free(line);
-		found++;
-	}
-	if (found)
-		ret = write_conf(path, &conf);
-	free_str_param(&conf);
-
-	return ret;
-
 }
 
 /********************************************************************/
@@ -2463,6 +2531,7 @@ static void free_cpu(cpu_param *cpu)
 	FREE_P(cpu->weight)
 	FREE_P(cpu->limit)
 	FREE_P(cpu->vcpus)
+	FREE_P(cpu->mask);
 }
 
 static void free_dq(dq_param *dq)
@@ -2578,6 +2647,7 @@ static void merge_cpu(cpu_param *dst, cpu_param *src)
 	MERGE_P(weight)
 	MERGE_P(limit)
 	MERGE_P(vcpus)
+	MERGE_P(mask);
 }
 
 #define	MERGE_LIST(x)							\

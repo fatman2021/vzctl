@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 #  Copyright (C) 2000-2008, Parallels, Inc. All rights reserved.
+=======
+#  Copyright (C) 2000-2011, Parallels, Inc. All rights reserved.
+>>>>>>> openvz/master
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -15,36 +19,47 @@
 #  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 #
 
-VERSION="2"
+# This config is valid for VSwap-enabled kernel (which currently means
+# any RHEL6-based kernel, i.e. 042test* or 042stab*).
 
+<<<<<<< HEAD
+=======
+ONBOOT="yes"
+
+>>>>>>> openvz/master
 # UBC parameters (in form of barrier:limit)
-# Primary parameters
-AVNUMPROC="unlimited"
-NUMPROC="unlimited"
-NUMTCPSOCK="419430"
-NUMOTHERSOCK="419430"
-VMGUARPAGES="unlimited"
-# Secondary parameters
+PHYSPAGES="0:1G"
+SWAPPAGES="0:2G"
 KMEMSIZE="unlimited"
-#TCPSNDBUF="2147483647:2147483647"
-TCPSNDBUF="1073741823:2147483647"
-TCPRCVBUF="1073741823:2147483647"
-OTHERSOCKBUF="1073741823:2147483647"
-DGRAMRCVBUF="unlimited"
-OOMGUARPAGES="unlimited"
-# Auxiliary parameters
 LOCKEDPAGES="unlimited"
-SHMPAGES="unlimited"
 PRIVVMPAGES="unlimited"
-NUMFILE="unlimited"
+SHMPAGES="unlimited"
+NUMPROC="unlimited"
+VMGUARPAGES="unlimited"
+OOMGUARPAGES="unlimited"
+NUMTCPSOCK="unlimited"
 NUMFLOCK="unlimited"
 NUMPTY="unlimited"
 NUMSIGINFO="unlimited"
+TCPSNDBUF="unlimited"
+TCPRCVBUF="unlimited"
+OTHERSOCKBUF="unlimited"
+DGRAMRCVBUF="unlimited"
+NUMOTHERSOCK="unlimited"
 DCACHESIZE="unlimited"
-
-PHYSPAGES="0:unlimited"
+NUMFILE="unlimited"
 NUMIPTENT="unlimited"
 
+<<<<<<< HEAD
 DISKSPACE="unlimited"
 DISKINODES="unlimited"
 
+=======
+# Disk quota parameters (in form of softlimit:hardlimit)
+DISKSPACE="1G"
+DISKINODES="200000"
+QUOTATIME="0"
+
+# CPU fair scheduler parameter
+CPUUNITS="1000"
+>>>>>>> openvz/master

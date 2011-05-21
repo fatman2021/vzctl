@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2010, Parallels, Inc. All rights reserved.
+ *  Copyright (C) 2010-2011, Parallels, Inc. All rights reserved.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -40,21 +40,23 @@
 
 #define NETLINK_UEVENT	31	/* from kernel/ve/vzevent.c */
 
-static void child_handler(int signo, siginfo_t * sig, void * uctx)
+static void child_handler(int signo)
 {
-	int status;
+	int pid, status;
 
-	wait(&status);
-	if (WIFEXITED(status)) {
-		if (WEXITSTATUS(status) != 0)
-			logger(-1, 0, "Child %d failed with exit code %d",
-					sig->si_pid, WEXITSTATUS(status));
+	while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
+	{
+		if (WIFEXITED(status))
+			if (WEXITSTATUS(status) != 0)
+				logger(-1, 0, "Child %d failed "
+						"with exit code %d",
+						pid, WEXITSTATUS(status));
+			else
+				logger(1, 0, "Child %d exited with success",
+						pid);
 		else if (WIFSIGNALED(status))
-			logger(-1, 0, "Child %d was terminated by signal %d",
-					sig->si_pid, WTERMSIG(status));
-		else
-			logger(1, 0, "Child %d exited with success",
-					sig->si_pid);
+			logger(-1, 0, "Child %d killed by signal %d",
+					pid, WTERMSIG(status));
 	}
 }
 
@@ -235,8 +237,8 @@ static int prepare_read_events(int daemonize)
 	}
 
 	sigemptyset(&act.sa_mask);
-	act.sa_sigaction = child_handler;
-	act.sa_flags = SA_NOCLDSTOP | SA_SIGINFO;
+	act.sa_handler = child_handler;
+	act.sa_flags = SA_NOCLDSTOP;
 	sigaction(SIGCHLD, &act, NULL);
 
 	if (daemonize != 0)

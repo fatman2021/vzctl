@@ -149,11 +149,12 @@ int real_chkpnt(int cpt_fd, envid_t veid, const char *root, cpt_param *param,
 			goto err_out;
 		if (ioctl(cpt_fd, CPT_DUMP, 0) < 0) {
 			logger(-1, errno, "Can not dump container");
-			if (cmd == CMD_CHKPNT)
+			if (cmd == CMD_CHKPNT) {
 				clean_hardlink_dir("/");
 				if (ioctl(cpt_fd, CPT_RESUME, 0) < 0)
 					logger(-1, errno, "Can not "
 							"resume container");
+			}
 			goto err_out;
 		}
 	}
@@ -243,7 +244,7 @@ int vps_chkpnt(vps_handler *h, envid_t veid, vps_param *vps_p, int cmd,
 		}
 	} else {
 		if (ioctl(cpt_fd, CPT_SET_VEID, veid) < 0) {
-			logger(0, errno, "Can not set CT ID");
+			logger(-1, errno, "Can not set CT ID");
 			goto err;
 		}
 	}
@@ -306,10 +307,10 @@ err:
 	return ret;
 }
 
-static int restrore_FN(vps_handler *h, envid_t veid, int wait_p, int err_p,
-	void *data)
+static int restore_fn(vps_handler *h, envid_t veid, int wait_p,
+		int old_wait_p, int err_p, void *data)
 {
-	int status, len, len1;
+	int status, len, len1, ret;
 	cpt_param *param = (cpt_param *) data;
 	char buf[PIPE_BUF];
 	int error_pipe[2];
@@ -318,7 +319,7 @@ static int restrore_FN(vps_handler *h, envid_t veid, int wait_p, int err_p,
 	if (param == NULL)
 		goto err;
 	/* Close all fds */
-	close_fds(0, wait_p, err_p, h->vzfd, param->rst_fd, -1);
+	close_fds(0, wait_p, old_wait_p, err_p, h->vzfd, param->rst_fd, -1);
 	if (ioctl(param->rst_fd, CPT_SET_VEID, veid) < 0) {
 		logger(-1, errno, "Can't set CT ID %d", param->rst_fd);
 		goto err;
@@ -334,10 +335,15 @@ static int restrore_FN(vps_handler *h, envid_t veid, int wait_p, int err_p,
 		goto err;
 	}
 	close(error_pipe[1]);
-	if (ioctl(param->rst_fd, CPT_SET_LOCKFD, wait_p) < 0) {
+
+	ret = ioctl(param->rst_fd, CPT_SET_LOCKFD2, wait_p);
+	if (ret < 0 && errno == EINVAL)
+		ret = ioctl(param->rst_fd, CPT_SET_LOCKFD, old_wait_p);
+	if (ret < 0) {
 		logger(-1, errno, "Can't set lockfd");
 		goto err;
 	}
+
 	if (ioctl(param->rst_fd, CPT_SET_STATUSFD, STDIN_FILENO) < 0) {
 		logger(-1, errno, "Can't set statusfd");
 		goto err;
@@ -350,7 +356,7 @@ static int restrore_FN(vps_handler *h, envid_t veid, int wait_p, int err_p,
 	ioctl(param->rst_fd, CPT_HARDLNK_ON);
 
 	logger(0, 0, "\tundump...");
-	if (ioctl(param->rst_fd, CPT_UNDUMP, 0) < 0) {
+	if (ioctl(param->rst_fd, CPT_UNDUMP, 0) != 0) {
 		logger(-1, errno, "Error: undump failed");
 		goto err_undump;
 	}
@@ -444,12 +450,13 @@ int vps_restore(vps_handler *h, envid_t veid, vps_param *vps_p, int cmd,
 	param->rst_fd = rst_fd;
 	param->cmd = cmd;
 	ret = vps_start_custom(h, veid, vps_p, SKIP_CONFIGURE,
-		NULL, restrore_FN, param);
+		NULL, restore_fn, param);
 	if (ret)
 		goto err;
 	/* Restore second-level quota links & quota device */
 	if ((cmd == CMD_RESTORE || cmd == CMD_UNDUMP) &&
-		vps_p->res.dq.ugidlimit != NULL && vps_p->res.dq.ugidlimit)
+		vps_p->res.dq.ugidlimit != NULL &&
+		*vps_p->res.dq.ugidlimit != 0)
 	{
 		logger(0, 0, "Restore second-level quota");
 		if (vps_execFn(h, veid, vps_p->res.fs.root, mk_quota_link, NULL,

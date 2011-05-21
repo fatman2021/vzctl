@@ -21,7 +21,7 @@
 
 Summary: OpenVZ containers control utility
 Name: vzctl
-Version: 3.0.25
+Version: 3.0.26
 Release: 1%{?dist}
 License: GPL
 Group: System Environment/Kernel
@@ -68,6 +68,8 @@ make DESTDIR=$RPM_BUILD_ROOT vpsconfdir=%{_vpsconfdir} \
 	install install-redhat-from-spec
 ln -s ../sysconfig/vz-scripts $RPM_BUILD_ROOT/%{_configdir}/conf
 ln -s ../vz/vz.conf $RPM_BUILD_ROOT/etc/sysconfig/vz
+# Needed for %ghost in %files section below
+touch $RPM_BUILD_ROOT/etc/sysconfig/vzeventd
 # This could go to vzctl-lib-devel, but since we don't have it...
 rm -f  $RPM_BUILD_ROOT/%_libdir/libvzctl.{la,so}
 
@@ -119,6 +121,7 @@ rm -rf $RPM_BUILD_ROOT
 %attr(644, root, root) %{_mandir}/man8/vzeventd.8.*
 %attr(644, root, root) %{_mandir}/man8/vzmigrate.8.*
 %attr(644, root, root) %{_mandir}/man8/arpsend.8.*
+%attr(644, root, root) %{_mandir}/man8/ndsend.8.*
 %attr(644, root, root) %{_mandir}/man8/vzsplit.8.*
 %attr(644, root, root) %{_mandir}/man8/vzcfgvalidate.8.*
 %attr(644, root, root) %{_mandir}/man8/vzmemcheck.8.*
@@ -139,10 +142,14 @@ rm -rf $RPM_BUILD_ROOT
 %config %{_vpsconfdir}/ve-basic.conf-sample
 %config %{_vpsconfdir}/ve-light.conf-sample
 %config %{_vpsconfdir}/ve-unlimited.conf-sample
+%config %{_vpsconfdir}/ve-vswap-256m.conf-sample
+%config %{_vpsconfdir}/ve-vswap-512m.conf-sample
+%config %{_vpsconfdir}/ve-vswap-1024m.conf-sample
 %config %{_vpsconfdir}/0.conf
 
 %attr(777, root, root) /etc/vz/conf
 %config /etc/sysconfig/vz
+%ghost %config(missingok) /etc/sysconfig/vzeventd
 
 %post
 /bin/rm -rf /dev/vzctl
@@ -183,8 +190,8 @@ fi
 
 # (Upgrading from <= vzctl-3.0.24)
 # If vz is running and vzeventd is not, start it
-if %{_initddir}/vz status >/dev/null 2&>1; then
-	if ! %{_initddir}/vzeventd status >/dev/null 2&>1; then
+if %{_initddir}/vz status >/dev/null 2>&1; then
+	if ! %{_initddir}/vzeventd status >/dev/null 2>&1; then
 		%{_initddir}/vzeventd start
 	fi
 fi

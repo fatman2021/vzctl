@@ -19,8 +19,11 @@ check_config() {
 	: ${VESTAT:=/proc/vz/vestat}
 	: ${VPSCONFDIR:=@VPSCONFDIR@}
 	: ${VZDEV:=venet0}
+	: ${VZCONF:=@PKGCONFDIR@/vz.conf}
 
 	if [ "${MODULES_DISABLED}" != "yes" ]; then
+		: ${IPTABLES_MODULES:="${IPTABLES}"}
+		IPTABLES_MODULES="ip_tables ${IPTABLES_MODULES} xt_tcpudp"
 		: ${PRELOAD_MODULES:="af_packet"}
 		: ${MODULES:="vzmon vzdquota vzdev"}
 		: ${MIGRATE_MODULES:="vzcpt vzrst"}
@@ -60,17 +63,17 @@ setup_ve0() {
 start_net() {
 	local mod
 
-	# we don't operate on a running interface
-	if /sbin/ip addr list | grep -q "venet0:.*UP" 2>/dev/null; then
-		return 0
-	fi
-
 	# load necessary modules
 	for mod in ${NET_MODULES}; do
 		/sbin/modprobe ${mod} 2>/dev/null
 	done
 
 	if [ ! -f ${VZVEINFO} ]; then
+		return 0
+	fi
+
+	# we don't operate on a running interface
+	if /sbin/ip addr list | grep -q "venet0:.*UP" 2>/dev/null; then
 		return 0
 	fi
 
@@ -215,12 +218,35 @@ stop_ve() {
 	done
 }
 
+modify_vzconf()
+{
+	# For vswap-enabled kernel (like RHEL6 042test or greater),
+	# use vswap config for CT. Don't do it if CONFIGFILE= is modified
+
+	egrep -q 'test|stab' /proc/vz/version 2>/dev/null || return 0
+
+	local cfg_old='^CONFIGFILE="basic"$'
+	local cfg_new='CONFIGFILE="vswap-256m"'
+	local kv=$(cat /proc/vz/version | sed 's/\(test\|stab\).*$//')
+	if test $kv -ge 42; then
+		if grep -q $cfg_old $VZCONF; then
+			sed -i "s/${cfg_old}/${cfg_new}/" $VZCONF
+			ewarn "Set $cfg_new in $VZCONF"
+		fi
+	fi
+}
+
+
 start() {
 	check_config || return
 
 	local mod rc
 
 	ebegin "Loading OpenVZ modules"
+	for mod in ${IPTABLES_MODULES}; do
+		/sbin/modprobe ${mod} >/dev/null 2>&1
+	done
+
 	for mod in ${PRELOAD_MODULES}; do
 		/sbin/modprobe -r ${mod} >/dev/null 2>&1
 		/sbin/modprobe ${mod} >/dev/null 2>&1
@@ -251,6 +277,7 @@ start() {
 
 	start_net
 	setup_ve0
+	modify_vzconf
 	start_ve
 }
 

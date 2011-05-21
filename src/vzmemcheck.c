@@ -44,7 +44,7 @@ void header(int verbose, int param)
 	else
 		printf("Output values in %%\n");
 	if (verbose)
-		printf("veid       ");
+		printf("CTID       ");
 	printf(" LowMem  LowMem     RAM MemSwap MemSwap   Alloc   Alloc   Alloc\n");
 	if (verbose)
 		printf("           ");
@@ -66,6 +66,8 @@ int calculate(int numerator, int verbose)
 	unsigned long held, maxheld, barrier, limit;
 	FILE *fd;
 	struct ub_struct ub_s;
+	envid_t *velist;
+	int venum;
 
 	if (get_mem(&mem.ram))
 		return 1;
@@ -79,6 +81,13 @@ int calculate(int numerator, int verbose)
 			strerror(errno));
 		return 1;
 	}
+	venum = get_running_ve_list(&velist);
+	if (venum < 0) {
+		fprintf(stderr, "Can't get list of running CTs: %s\n",
+				strerror(-venum));
+		return 1;
+	}
+
 	mem.lowmem *= 0.4;
 	memset(&ub_s, 0, sizeof(ub_s));
 	memset(&rutotal_comm, 0, sizeof(rutotal_comm));
@@ -108,7 +117,7 @@ int calculate(int numerator, int verbose)
 				found = 0;
 			}
 		}
-		if (found && veid) {
+		if (found && veid && ve_in_list(velist, venum, veid)) {
 			if (!calc_ve_utilization(&ub_s, &ru_utl, &mem,
 				numerator))
 			{
@@ -160,8 +169,9 @@ int calculate(int numerator, int verbose)
 		}
 	}
 	fclose(fd);
+	free(velist);
 	if (verbose) {
-		printf("-------------------------------------------------------------------------\n");
+		printf("--------------------------------------------------------------------------\n");
 		printf("Summary:   ");
 	}
 	printf("%7.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f\n",
@@ -178,7 +188,7 @@ int calculate(int numerator, int verbose)
 		r = mem.ram / (1024 * 1024);
 		rs = (mem.ram + mem.swap) / (1024 * 1024);
 		if (verbose)
-			 printf("        ");
+			printf("           ");
 		printf("%7.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f\n",
 			lm, lm, r, rs, rs, rs, rs, rs);
 	}

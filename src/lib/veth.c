@@ -60,12 +60,11 @@ static int veth_dev_mac_filter(vps_handler *h, envid_t veid, veth_dev *dev)
 static int veth_dev_create(vps_handler *h, envid_t veid, veth_dev *dev)
 {
 	struct vzctl_ve_hwaddr veth;
-	int ret;
 
 	if (!dev->dev_name[0] || dev->addrlen != ETH_ALEN)
-		return EINVAL;
+		return VZ_VETH_ERROR;
 	if (dev->addrlen_ve != 0 && dev->addrlen_ve != ETH_ALEN)
-		return EINVAL;
+		return VZ_VETH_ERROR;
 	veth.op = VE_ETH_ADD;
 	veth.veid = veid;
 	veth.addrlen = dev->addrlen;
@@ -74,17 +73,19 @@ static int veth_dev_create(vps_handler *h, envid_t veid, veth_dev *dev)
 	memcpy(veth.dev_addr_ve, dev->dev_addr_ve, ETH_ALEN);
 	memcpy(veth.dev_name, dev->dev_name, IFNAMSIZE);
 	memcpy(veth.dev_name_ve, dev->dev_name_ve, IFNAMSIZE);
-	ret = ioctl(h->vzfd, VETHCTL_VE_HWADDR, &veth);
-	if (ret) {
+	if (ioctl(h->vzfd, VETHCTL_VE_HWADDR, &veth) != 0) {
 		if (errno == ENOTTY) {
 			logger(-1, 0, "Error: veth feature is"
 				" not supported by kernel");
+			logger(-1, 0, "Please check that vzethdev"
+				" kernel module is loaded");
 		} else {
 			logger(-1, errno, "Unable to create veth");
 		}
-		ret = VZ_VETH_ERROR;
+		return VZ_VETH_ERROR;
 	}
-	return ret;
+
+	return 0;
 }
 
 static int veth_dev_remove(vps_handler *h, envid_t veid, veth_dev *dev)
@@ -106,6 +107,29 @@ static int veth_dev_remove(vps_handler *h, envid_t veid, veth_dev *dev)
 			ret = 0;
 	}
 	return ret;
+}
+
+void free_veth_dev(veth_dev *dev)
+{
+}
+
+static void free_veth(list_head_t *head)
+{
+	veth_dev *tmp, *dev_t;
+
+	if (list_empty(head))
+		return;
+	list_for_each_safe(dev_t, tmp, head, list) {
+		free_veth_dev(dev_t);
+		list_del(&dev_t->list);
+		free(dev_t);
+	}
+	list_head_init(head);
+}
+
+void free_veth_param(veth_param *dev)
+{
+	free_veth(&dev->dev);
 }
 
 static int run_vznetcfg(envid_t veid, veth_dev *dev)
@@ -255,43 +279,7 @@ int add_veth_param(veth_param *veth, veth_dev *dev)
 	return 0;
 }
 
-veth_dev *find_veth(list_head_t *head, veth_dev *dev)
-{
-	veth_dev *tmp;
-
-	if (list_empty(head))
-		return NULL;
-	list_for_each(tmp, head, list) {
-		if (!strcmp(tmp->dev_name, dev->dev_name))
-			return dev;
-	}
-	return NULL;
-}
-
-void free_veth_dev(veth_dev *dev)
-{
-}
-
-void free_veth(list_head_t *head)
-{
-	veth_dev *tmp, *dev_t;
-
-	if (list_empty(head))
-		return;
-	list_for_each_safe(dev_t, tmp, head, list) {
-		free_veth_dev(dev_t);
-		list_del(&dev_t->list);
-		free(dev_t);
-	}
-	list_head_init(head);
-}
-
-void free_veth_param(veth_param *dev)
-{
-	free_veth(&dev->dev);
-}
-
-veth_dev *find_veth_by_ifname(list_head_t *head, char *name)
+static veth_dev *find_veth_by_ifname(list_head_t *head, char *name)
 {
 	veth_dev *dev_t;
 
@@ -330,7 +318,7 @@ veth_dev *find_veth_configure(list_head_t *head)
 	return NULL;
 }
 
-void fill_veth_dev(veth_dev *dst, veth_dev *src)
+static void fill_veth_dev(veth_dev *dst, veth_dev *src)
 {
 	if (src->dev_name[0] != 0)
 		strcpy(dst->dev_name, src->dev_name);
@@ -351,7 +339,7 @@ void fill_veth_dev(veth_dev *dst, veth_dev *src)
 	}
 }
 
-int merge_veth_dev(veth_dev *old, veth_dev *new, veth_dev *merged)
+static int merge_veth_dev(veth_dev *old, veth_dev *new, veth_dev *merged)
 {
 	memset(merged, 0, sizeof(veth_dev));
 
@@ -419,7 +407,7 @@ int copy_veth_param(veth_param *dst, veth_param *src)
 	return 0;
 }
 
-int read_proc_veth(envid_t veid, veth_param *veth)
+static int read_proc_veth(envid_t veid, veth_param *veth)
 {
 	FILE *fp;
 	char buf[256];

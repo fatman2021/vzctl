@@ -44,6 +44,101 @@ extern struct mod_action g_action;
 extern int do_enter(vps_handler *h, envid_t veid, const char *root,
 			int argc, char **argv);
 
+static struct option set_opt[] = {
+	{"save",	no_argument, NULL, PARAM_SAVE},
+	{"force",	no_argument, NULL, PARAM_FORCE},
+	{"applyconfig",	required_argument, NULL, PARAM_APPLYCONFIG},
+	{"applyconfig_map",
+			required_argument, NULL, PARAM_APPLYCONFIG_MAP},
+	{"reset_ub",	no_argument, NULL, PARAM_RESET_UB},
+	{"iptables",	required_argument, NULL, PARAM_IPTABLES},
+	/*	UB	*/
+	{"kmemsize",	required_argument, NULL, PARAM_KMEMSIZE},
+	{"lockedpages",	required_argument, NULL, PARAM_LOCKEDPAGES},
+	{"privvmpages",	required_argument, NULL, PARAM_PRIVVMPAGES},
+	{"shmpages",	required_argument, NULL, PARAM_SHMPAGES},
+	{"numproc",	required_argument, NULL, PARAM_NUMPROC},
+	{"physpages",	required_argument, NULL, PARAM_PHYSPAGES},
+	{"vmguarpages",	required_argument, NULL, PARAM_VMGUARPAGES},
+	{"oomguarpages",required_argument, NULL, PARAM_OOMGUARPAGES},
+	{"numtcpsock",	required_argument, NULL, PARAM_NUMTCPSOCK},
+	{"numflock",	required_argument, NULL, PARAM_NUMFLOCK},
+	{"numpty",	required_argument, NULL, PARAM_NUMPTY},
+	{"numsiginfo",	required_argument, NULL, PARAM_NUMSIGINFO},
+	{"tcpsndbuf",	required_argument, NULL, PARAM_TCPSNDBUF},
+	{"tcprcvbuf",	required_argument, NULL, PARAM_TCPRCVBUF},
+	{"othersockbuf",required_argument, NULL, PARAM_OTHERSOCKBUF},
+	{"dgramrcvbuf",	required_argument, NULL, PARAM_DGRAMRCVBUF},
+	{"numothersock",required_argument, NULL, PARAM_NUMOTHERSOCK},
+	{"numfile",	required_argument, NULL, PARAM_NUMFILE},
+	{"dcachesize",	required_argument, NULL, PARAM_DCACHESIZE},
+	{"numiptent",	required_argument, NULL, PARAM_NUMIPTENT},
+	{"avnumproc",	required_argument, NULL, PARAM_AVNUMPROC},
+	{"swappages",	required_argument, NULL, PARAM_SWAPPAGES},
+	/*	Capability */
+	{"capability",	required_argument, NULL, PARAM_CAP},
+	/*	Network	*/
+	{"ipadd",	required_argument, NULL, PARAM_IP_ADD},
+	{"ip",		required_argument, NULL, PARAM_IP_ADD},
+	{"ipdel",	required_argument, NULL, PARAM_IP_DEL},
+	{"skip_arpdetect",
+			no_argument, NULL, PARAM_SKIPARPDETECT},
+	{"netdev_add",	required_argument, NULL, PARAM_NETDEV_ADD},
+	{"netdev_del",	required_argument, NULL, PARAM_NETDEV_DEL},
+	{"hostname",	required_argument, NULL, PARAM_HOSTNAME},
+	{"nameserver",	required_argument, NULL, PARAM_NAMESERVER},
+	{"searchdomain",required_argument, NULL, PARAM_SEARCHDOMAIN},
+	{"userpasswd",	required_argument, NULL, PARAM_USERPW},
+	/*	Devices	*/
+	{"devices",	required_argument, NULL, PARAM_DEVICES},
+	{"devnodes",	required_argument, NULL, PARAM_DEVNODES},
+	{"pci_add",	required_argument, NULL, PARAM_PCI_ADD},
+	{"pci_del",	required_argument, NULL, PARAM_PCI_DEL},
+	/*	fs param */
+	{"root",	required_argument, NULL, PARAM_ROOT},
+	{"private",	required_argument, NULL, PARAM_PRIVATE},
+	{"noatime",	required_argument, NULL, PARAM_NOATIME},
+	/*	template	*/
+	{"ostemplate",	required_argument, NULL, PARAM_OSTEMPLATE},
+	/*	Cpu	*/
+	{"cpuunits",	required_argument, NULL, PARAM_CPUUNITS},
+	{"cpuweight",	required_argument, NULL, PARAM_CPUWEIGHT},
+	{"cpulimit",	required_argument, NULL, PARAM_CPULIMIT},
+	{"cpus",	required_argument, NULL, PARAM_VCPUS},
+	{"cpumask",	required_argument, NULL, PARAM_CPUMASK},
+	/*	create param	*/
+	{"onboot",	required_argument, NULL, PARAM_ONBOOT},
+	{"setmode",	required_argument, NULL, PARAM_SETMODE},
+	{"disabled",	required_argument, NULL, PARAM_DISABLED},
+	/*	quota */
+	{"diskquota",	required_argument, NULL, PARAM_DISK_QUOTA},
+	{"diskspace",	required_argument, NULL, PARAM_DISKSPACE},
+	{"diskinodes",	required_argument, NULL, PARAM_DISKINODES},
+	{"quotatime",	required_argument, NULL, PARAM_QUOTATIME},
+	{"quotaugidlimit",
+			required_argument, NULL, PARAM_QUOTAUGIDLIMIT},
+	{"meminfo",	required_argument, NULL, PARAM_MEMINFO},
+	/*	netif	*/
+	{"netif_add",	required_argument, NULL, PARAM_NETIF_ADD_CMD},
+	{"netif_del",	required_argument, NULL, PARAM_NETIF_DEL_CMD},
+	{"mac_filter",	required_argument, NULL, PARAM_NETIF_MAC_FILTER},
+
+	{"mac",		required_argument, NULL, PARAM_NETIF_MAC},
+	{"ifname",	required_argument, NULL, PARAM_NETIF_IFNAME},
+	{"host_mac",	required_argument, NULL, PARAM_NETIF_HOST_MAC},
+	{"host_ifname",	required_argument, NULL, PARAM_NETIF_HOST_IFNAME},
+	{"bridge",	required_argument, NULL, PARAM_NETIF_BRIDGE},
+
+	/*	name	*/
+	{"name",	required_argument, NULL, PARAM_NAME},
+	{"features",	required_argument, NULL, PARAM_FEATURES},
+	{"ioprio",	required_argument, NULL, PARAM_IOPRIO},
+	{"description",	required_argument, NULL, PARAM_DESCRIPTION},
+	{"bootorder",	required_argument, NULL, PARAM_BOOTORDER},
+
+	{NULL, 0, NULL, 0}
+};
+
 int parse_opt(envid_t veid, int argc, char *argv[], struct option *opt,
 	vps_param *param)
 {
@@ -58,28 +153,37 @@ int parse_opt(envid_t veid, int argc, char *argv[], struct option *opt,
 		if (c == '?')
 			return VZ_INVALID_PARAMETER_VALUE;
 		ret = vps_parse_opt(veid, opt, param, c, optarg, &g_action);
-		if (!ret)
-			continue;
-		else if (ret == ERR_INVAL || ret == ERR_INVAL_SKIP ||
-			ret == ERR_LONG_TRUNC)
-		{
-			if (option_index < 0) {
-				logger(-1, 0, "Bad parameter for"
-					" -%c : %s", c, optarg);
-				return VZ_INVALID_PARAMETER_VALUE;
-			} else {
-				logger(-1, 0, "Bad parameter for"
-					" --%s: %s",
-					opt[option_index].name, optarg);
-				return VZ_INVALID_PARAMETER_VALUE;
-			}
-		} else if (ret == ERR_UNK) {
-			if (option_index < 0)
-				logger(-1, 0, "Invalid option -%c", c);
-			else
-				logger(-1, 0, "Invalid option --%s",
-					opt[option_index].name);
-			return VZ_INVALID_PARAMETER_SYNTAX;
+		switch (ret) {
+			case 0:
+			case ERR_DUP:
+				continue;
+			case ERR_INVAL:
+			case ERR_INVAL_SKIP:
+			case ERR_LONG_TRUNC:
+				if (option_index < 0) {
+					logger(-1, 0, "Bad parameter for"
+						" -%c : %s", c, optarg);
+					return VZ_INVALID_PARAMETER_VALUE;
+				} else {
+					logger(-1, 0, "Bad parameter for"
+						" --%s: %s",
+						opt[option_index].name,
+						optarg);
+					return VZ_INVALID_PARAMETER_VALUE;
+				}
+			case ERR_UNK:
+				if (option_index < 0)
+					logger(-1, 0, "Invalid option -%c", c);
+				else
+					logger(-1, 0, "Invalid option --%s",
+						opt[option_index].name);
+				return VZ_INVALID_PARAMETER_SYNTAX;
+			case ERR_NOMEM:
+				logger(-1, 0, "Not enough memory");
+				return VZ_RESOURCE_ERROR;
+			case ERR_OTHER:
+				logger(-1, 0, "Error parsing options");
+				return VZ_SYSTEM_ERROR;
 		}
 	}
 	if (optind < argc) {
@@ -211,7 +315,7 @@ static int parse_create_opt(envid_t veid, int argc, char **argv,
 
 	opt = mod_make_opt(create_options, &g_action, NULL);
 	if (opt == NULL)
-		return -1;
+		return VZ_RESOURCE_ERROR;
 	ret = parse_opt(veid, argc, argv, opt, param);
 	free(opt);
 
@@ -506,100 +610,9 @@ static int parse_set_opt(envid_t veid, int argc, char *argv[],
 	int ret;
 	struct option *opt;
 
-	static struct option set_opt[] = {
-	{"save",	no_argument, NULL, PARAM_SAVE},
-	{"force",	no_argument, NULL, PARAM_FORCE},
-	{"applyconfig",	required_argument, NULL, PARAM_APPLYCONFIG},
-	{"applyconfig_map",	required_argument, NULL, PARAM_APPLYCONFIG_MAP},
-	{"reset_ub",	no_argument, NULL, PARAM_RESET_UB},
-	{"iptables",	required_argument, NULL, PARAM_IPTABLES},
-	/*	UB	*/
-	{"kmemsize",	required_argument, NULL, PARAM_KMEMSIZE},
-	{"lockedpages",	required_argument, NULL, PARAM_LOCKEDPAGES},
-	{"privvmpages",	required_argument, NULL, PARAM_PRIVVMPAGES},
-	{"shmpages",	required_argument, NULL, PARAM_SHMPAGES},
-	{"numproc",	required_argument, NULL, PARAM_NUMPROC},
-	{"physpages",	required_argument, NULL, PARAM_PHYSPAGES},
-	{"vmguarpages",	required_argument, NULL, PARAM_VMGUARPAGES},
-	{"oomguarpages",required_argument, NULL, PARAM_OOMGUARPAGES},
-	{"numtcpsock",	required_argument, NULL, PARAM_NUMTCPSOCK},
-	{"numflock",	required_argument, NULL, PARAM_NUMFLOCK},
-	{"numpty",	required_argument, NULL, PARAM_NUMPTY},
-	{"numsiginfo",	required_argument, NULL, PARAM_NUMSIGINFO},
-	{"tcpsndbuf",	required_argument, NULL, PARAM_TCPSNDBUF},
-	{"tcprcvbuf",	required_argument, NULL, PARAM_TCPRCVBUF},
-	{"othersockbuf",required_argument, NULL, PARAM_OTHERSOCKBUF},
-	{"dgramrcvbuf",	required_argument, NULL, PARAM_DGRAMRCVBUF},
-	{"numothersock",required_argument, NULL, PARAM_NUMOTHERSOCK},
-	{"numfile",	required_argument, NULL, PARAM_NUMFILE},
-	{"dcachesize",	required_argument, NULL, PARAM_DCACHESIZE},
-	{"numiptent",	required_argument, NULL, PARAM_NUMIPTENT},
-	{"avnumproc",	required_argument, NULL, PARAM_AVNUMPROC},
-	{"swappages",	required_argument, NULL, PARAM_SWAPPAGES},
-	/*	Capability */
-	{"capability",	required_argument, NULL, PARAM_CAP},
-	/*	Network	*/
-	{"ipadd",	required_argument, NULL, PARAM_IP_ADD},
-	{"ip",		required_argument, NULL, PARAM_IP_ADD},
-	{"ipdel",	required_argument, NULL, PARAM_IP_DEL},
-	{"skip_arpdetect",no_argument, NULL, PARAM_SKIPARPDETECT},
-	{"netdev_add",	required_argument, NULL, PARAM_NETDEV_ADD},
-	{"netdev_del",	required_argument, NULL, PARAM_NETDEV_DEL},
-	{"hostname",	required_argument, NULL, PARAM_HOSTNAME},
-	{"nameserver",	required_argument, NULL, PARAM_NAMESERVER},
-	{"searchdomain",required_argument, NULL, PARAM_SEARCHDOMAIN},
-	{"userpasswd",	required_argument, NULL, PARAM_USERPW},
-	/*	Devices	*/
-	{"devices",	required_argument, NULL, PARAM_DEVICES},
-	{"devnodes",	required_argument, NULL, PARAM_DEVNODES},
-	{"pci_add",	required_argument, NULL, PARAM_PCI_ADD},
-	{"pci_del",	required_argument, NULL, PARAM_PCI_DEL},
-	/*	fs param */
-	{"root",	required_argument, NULL, PARAM_ROOT},
-	{"private",	required_argument, NULL, PARAM_PRIVATE},
-	{"noatime",	required_argument, NULL, PARAM_NOATIME},
-	/*	template	*/
-	{"ostemplate",	required_argument, NULL, PARAM_OSTEMPLATE},
-	/*	Cpu	*/
-	{"cpuunits",	required_argument, NULL, PARAM_CPUUNITS},
-	{"cpuweight",	required_argument, NULL, PARAM_CPUWEIGHT},
-	{"cpulimit",	required_argument, NULL, PARAM_CPULIMIT},
-	{"cpus",	required_argument, NULL, PARAM_VCPUS},
-	/*	create param	*/
-	{"onboot",	required_argument, NULL, PARAM_ONBOOT},
-	{"setmode",	required_argument, NULL, PARAM_SETMODE},
-	{"disabled",	required_argument, NULL, PARAM_DISABLED},
-	/*	quota */
-	{"diskquota",	required_argument, NULL, PARAM_DISK_QUOTA},
-	{"diskspace",	required_argument, NULL, PARAM_DISKSPACE},
-	{"diskinodes",	required_argument, NULL, PARAM_DISKINODES},
-	{"quotatime",	required_argument, NULL, PARAM_QUOTATIME},
-	{"quotaugidlimit", required_argument, NULL, PARAM_QUOTAUGIDLIMIT},
-	{"meminfo",	required_argument, NULL, PARAM_MEMINFO},
-	/*	netif	*/
-	{"netif_add",	required_argument, NULL, PARAM_NETIF_ADD_CMD},
-	{"netif_del",	required_argument, NULL, PARAM_NETIF_DEL_CMD},
-	{"mac_filter",	required_argument, NULL, PARAM_NETIF_MAC_FILTER},
-
-	{"mac",		required_argument, NULL, PARAM_NETIF_MAC},
-	{"ifname",	required_argument, NULL, PARAM_NETIF_IFNAME},
-	{"host_mac",	required_argument, NULL, PARAM_NETIF_HOST_MAC},
-	{"host_ifname",	required_argument, NULL, PARAM_NETIF_HOST_IFNAME},
-	{"bridge",	required_argument, NULL, PARAM_NETIF_BRIDGE},
-
-	/*	name	*/
-	{"name",	required_argument, NULL, PARAM_NAME},
-	{"features",	required_argument, NULL, PARAM_FEATURES},
-	{"ioprio",	required_argument, NULL, PARAM_IOPRIO},
-	{"description",	required_argument, NULL, PARAM_DESCRIPTION},
-	{"bootorder",	required_argument, NULL, PARAM_BOOTORDER},
-
-	{NULL, 0, NULL, 0}
-	};
-
 	opt = mod_make_opt(set_opt, &g_action, NULL);
 	if (opt == NULL)
-		return -1;
+		return VZ_RESOURCE_ERROR;
 	ret = parse_opt(veid, argc, argv, opt, param);
 	free(opt);
 
@@ -707,7 +720,7 @@ static int set(vps_handler *h, envid_t veid, vps_param *g_p, vps_param *vps_p,
 	{
 		actions = vz_malloc(sizeof(*actions));
 		if (!actions)
-			return ERR_NOMEM;
+			return VZ_RESOURCE_ERROR;
 		dist_name = get_dist_name(&g_p->res.tmpl);
 		if ((ret = read_dist_actions(dist_name, DIST_DIR, actions)))
 			return ret;
@@ -888,7 +901,7 @@ static int parse_custom_opt(envid_t veid, int argc, char **argv,
 
 	opt = mod_make_opt(NULL, &g_action, name);
 	if (opt == NULL)
-		return -1;
+		return VZ_RESOURCE_ERROR;
 	ret = parse_opt(veid, argc, argv, opt, param);
 	free(opt);
 
@@ -1048,9 +1061,6 @@ int run_action(envid_t veid, act_t action, vps_param *g_p, vps_param *vps_p,
 					fname);
 			ret = vps_save_config(veid, fname,
 					cmd_p, vps_p, &g_action);
-			if (ret == 0)
-				logger(0, 0, "Saved parameters "
-						"for CT %d", veid);
 		} else if (cmd_p->opt.save != NO) {
 			if (list_empty(&cmd_p->res.misc.userpw)) {
 				logger(0, 0, "WARNING: Settings were not saved"

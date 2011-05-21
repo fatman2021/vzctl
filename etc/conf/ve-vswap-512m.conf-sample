@@ -1,4 +1,4 @@
-#  Copyright (C) 2000-2008, Parallels, Inc. All rights reserved.
+#  Copyright (C) 2000-2011, Parallels, Inc. All rights reserved.
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -15,36 +15,38 @@
 #  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 #
 
-VERSION="2"
+# This config is valid for VSwap-enabled kernel (which currently means
+# any RHEL6-based kernel, i.e. 042test* or 042stab*).
+
+ONBOOT="yes"
 
 # UBC parameters (in form of barrier:limit)
-# Primary parameters
-AVNUMPROC="unlimited"
-NUMPROC="unlimited"
-NUMTCPSOCK="1801439850948198"
-NUMOTHERSOCK="1801439850948198"
-VMGUARPAGES="unlimited"
-# Secondary parameters
+PHYSPAGES="0:512M"
+SWAPPAGES="0:1G"
 KMEMSIZE="unlimited"
-#TCPSNDBUF="2147483647:2147483647"
-TCPSNDBUF="4611686018427387903:9223372036854775807"
-TCPRCVBUF="4611686018427387903:9223372036854775807"
-OTHERSOCKBUF="4611686018427387903:9223372036854775807"
-DGRAMRCVBUF="unlimited"
-OOMGUARPAGES="unlimited"
-# Auxiliary parameters
 LOCKEDPAGES="unlimited"
-SHMPAGES="unlimited"
 PRIVVMPAGES="unlimited"
-NUMFILE="unlimited"
+SHMPAGES="unlimited"
+NUMPROC="unlimited"
+VMGUARPAGES="unlimited"
+OOMGUARPAGES="unlimited"
+NUMTCPSOCK="unlimited"
 NUMFLOCK="unlimited"
 NUMPTY="unlimited"
 NUMSIGINFO="unlimited"
+TCPSNDBUF="unlimited"
+TCPRCVBUF="unlimited"
+OTHERSOCKBUF="unlimited"
+DGRAMRCVBUF="unlimited"
+NUMOTHERSOCK="unlimited"
 DCACHESIZE="unlimited"
-
-PHYSPAGES="0:unlimited"
+NUMFILE="unlimited"
 NUMIPTENT="unlimited"
 
-DISKSPACE="unlimited"
-DISKINODES="unlimited"
+# Disk quota parameters (in form of softlimit:hardlimit)
+DISKSPACE="1G"
+DISKINODES="200000"
+QUOTATIME="0"
 
+# CPU fair scheduler parameter
+CPUUNITS="1000"
