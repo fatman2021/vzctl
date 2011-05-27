@@ -51,7 +51,7 @@ arch:
 	$(INSTALL_DATA) $(srcdir)/arch.conf $(DESTDIR)$(distconfdir)/arch.conf
 
 centos:
-	$(INSTALL_DATA) $(srcdir)/centos.conf \
+	$(INSTALL_DATA) $(srcdir)/redhat.conf \
 		$(DESTDIR)$(distconfdir)/centos.conf
 
 debian:
@@ -92,8 +92,12 @@ redhat:
 	done
 
 rhel:
-	$(INSTALL_DATA) $(srcdir)/centos.conf \
+	$(INSTALL_DATA) $(srcdir)/redhat.conf \
 		$(DESTDIR)$(distconfdir)/rhel.conf
+
+scientific:
+	$(INSTALL_DATA) $(srcdir)/redhat.conf \
+		$(DESTDIR)$(distconfdir)/scientific.conf
 
 slack:
 	$(INSTALL_DATA) $(srcdir)/slackware.conf \
@@ -134,6 +138,7 @@ install-data-hook: altlinux \
                    owl \
                    redhat \
                    rhel \
+                   scientific \
                    slack \
                    suse \
                    ubuntu

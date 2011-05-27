@@ -21,7 +21,7 @@
 
 Summary: OpenVZ containers control utility
 Name: vzctl
-Version: 3.0.26
+Version: 3.0.27
 Release: 1%{?dist}
 License: GPL
 Group: System Environment/Kernel
@@ -109,6 +109,7 @@ rm -rf $RPM_BUILD_ROOT
 %attr(755,root,root) %{_sbindir}/vzcfgvalidate
 %attr(755,root,root) %{_sbindir}/vzmigrate
 %attr(755,root,root) %{_sbindir}/vzifup-post
+%attr(755,root,root) %{_sbindir}/vzubc
 %attr(644,root,root) %{_logrdir}/vzctl
 %attr(644,root,root) %{_distconfdir}/distribution.conf-template
 %attr(644,root,root) %{_distconfdir}/default
@@ -128,7 +129,7 @@ rm -rf $RPM_BUILD_ROOT
 %attr(644, root, root) %{_mandir}/man8/vzcalc.8.*
 %attr(644, root, root) %{_mandir}/man8/vzpid.8.*
 %attr(644, root, root) %{_mandir}/man8/vzcpucheck.8.*
-#%attr(644, root, root) %{_mandir}/man8/vzcheckovr.8.*
+%attr(644, root, root) %{_mandir}/man8/vzubc.8.*
 %attr(644, root, root) %{_mandir}/man8/vzlist.8.*
 %attr(644, root, root) %{_mandir}/man8/vzifup-post.8.*
 %attr(644, root, root) %{_mandir}/man5/ctid.conf.5.*

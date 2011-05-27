@@ -1,8 +1,4 @@
-<<<<<<< HEAD
-#  Copyright (C) 2000-2008, Parallels, Inc. All rights reserved.
-=======
 #  Copyright (C) 2000-2011, Parallels, Inc. All rights reserved.
->>>>>>> openvz/master
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -22,11 +18,6 @@
 # This config is valid for VSwap-enabled kernel (which currently means
 # any RHEL6-based kernel, i.e. 042test* or 042stab*).
 
-<<<<<<< HEAD
-=======
-ONBOOT="yes"
-
->>>>>>> openvz/master
 # UBC parameters (in form of barrier:limit)
 PHYSPAGES="0:1G"
 SWAPPAGES="0:2G"
@@ -49,17 +40,9 @@ NUMOTHERSOCK="unlimited"
 DCACHESIZE="unlimited"
 NUMFILE="unlimited"
 NUMIPTENT="unlimited"
-
-<<<<<<< HEAD
 DISKSPACE="unlimited"
 DISKINODES="unlimited"
-
-=======
-# Disk quota parameters (in form of softlimit:hardlimit)
-DISKSPACE="1G"
-DISKINODES="200000"
 QUOTATIME="0"
 
 # CPU fair scheduler parameter
 CPUUNITS="1000"
->>>>>>> openvz/master

@@ -141,6 +141,18 @@ static vps_config config[] = {
 {"IOPRIO",	NULL, PARAM_IOPRIO},
 {"BOOTORDER",	NULL, PARAM_BOOTORDER},
 
+/* These ones are known parameters for global config file,
+ * it's just vzctl is not interested in those
+ */
+{"VIRTUOZZO",		NULL, PARAM_IGNORED},
+{"VE0CPUUNITS",		NULL, PARAM_IGNORED},
+{"VZFASTBOOT",		NULL, PARAM_IGNORED},
+{"NEIGHBOUR_DEVS",	NULL, PARAM_IGNORED},
+{"ERROR_ON_ARPFAIL",	NULL, PARAM_IGNORED},
+{"VZWDOG",		NULL, PARAM_IGNORED},
+{"IPTABLES_MODULES",	NULL, PARAM_IGNORED},
+{"IP6TABLES",		NULL, PARAM_IGNORED},
+
 {NULL,		NULL, -1}
 };
 
@@ -1018,6 +1030,20 @@ static int parse_dev(vps_param *vps_p, char *val)
 	return 0;
 }
 
+static const char* devperm2str(unsigned long perms)
+{
+	static char mask[4];
+	int i=0;
+	if (perms & S_IROTH)
+		mask[i++] = 'r';
+	if (perms & S_IWOTH)
+		mask[i++] = 'w';
+	if (perms & S_IXGRP)
+		mask[i++] = 'q';
+	mask[i] = 0;
+	return mask;
+}
+
 static int store_dev(vps_param *old_p, vps_param *vps_p, vps_config *conf,
 	list_head_t *conf_h)
 {
@@ -1034,8 +1060,7 @@ static int store_dev(vps_param *old_p, vps_param *vps_p, vps_config *conf,
 	sp = buf;
 	ep = buf + sizeof(buf) - 1;
 	list_for_each(res, &dev->dev, list) {
-		int major, minor, i = 0;
-		char mask[3];
+		int major, minor;
 
 		/* Devices with names (--devnodes) are handled by
 		 * store_devnodes(), so skip those here */
@@ -1045,18 +1070,14 @@ static int store_dev(vps_param *old_p, vps_param *vps_p, vps_config *conf,
 			sp += snprintf(buf, sizeof(buf), "%s=\"", conf->name);
 		major = major(res->dev);
 		minor = minor(res->dev);
-		if (res->mask & S_IROTH)
-			mask[i++] = 'r';
-		if (res->mask & S_IWOTH)
-			mask[i++] = 'w';
-		mask[i] = 0;
 		if (res->use_major) {
 			r = snprintf(sp, ep - sp,"%c:%d:all:%s ",
-				S_ISBLK(res->type) ? 'b' : 'c', major, mask);
+				S_ISBLK(res->type) ? 'b' : 'c', major,
+				devperm2str(res->mask));
 		} else {
 			r = snprintf(sp, ep - sp,"%c:%d:%d:%s ",
 				S_ISBLK(res->type) ? 'b' : 'c', major, minor,
-				mask);
+				devperm2str(res->mask));
 		}
 		sp += r;
 		if ((r < 0) || (sp >= ep))
@@ -1142,9 +1163,8 @@ static int store_devnodes(vps_param *old_p, vps_param *vps_p, vps_config *conf,
 	char buf[STR_SIZE];
 	dev_param *dev = &vps_p->res.dev;
 	dev_res *res;
-	int r, i;
+	int r;
 	char *sp, *ep;
-	char mask[3];
 
 	if (conf->id != PARAM_DEVNODES)
 		return 0;
@@ -1154,19 +1174,14 @@ static int store_devnodes(vps_param *old_p, vps_param *vps_p, vps_config *conf,
 	*sp = 0;
 	ep = buf + sizeof(buf) - 1;
 	list_for_each (res, &dev->dev, list) {
-		i = 0;
 		/* Devices with no names (--devices) are handled by
 		 * store_dev(), so skip those here */
 		if (!res->name)
 			continue;
 		if (sp == buf)
 			sp += snprintf(buf, sizeof(buf), "%s=\"", conf->name);
-		if (res->mask & S_IROTH)
-			mask[i++] = 'r';
-		if (res->mask & S_IWOTH)
-			mask[i++] = 'w';
-		mask[i] = 0;
-		r = snprintf(sp, ep - sp,"%s:%s ", res->name, mask);
+		r = snprintf(sp, ep - sp,"%s:%s ", res->name,
+			devperm2str(res->mask));
 		sp += r;
 		if ((r < 0) || (sp >= ep))
 			break;
@@ -2066,6 +2081,9 @@ static int parse(envid_t veid, vps_param *vps_p, char *val, int id)
 	case PARAM_BOOTORDER:
 		ret = conf_parse_ulong(&vps_p->res.misc.bootorder, val);
 		break;
+	case PARAM_IGNORED:
+		/* Well known but ignored parameter */
+		break;
 	default:
 		logger(10, 0, "Not handled parameter %d %s", id, val);
 		break;
@@ -2139,8 +2157,12 @@ int vps_parse_config(envid_t veid, char *path, vps_param *vps_p,
 			ret = parse(veid, vps_p, rtoken, conf->id);
 		} else if (action != NULL)
 			ret = mod_parse(veid, action, ltoken, -1, rtoken);
-		else
+		else {
+			logger(1, 0, "Warning at %s:%d: unknown parameter "
+				"%s (\"%s\"), ignored",
+				path, line, ltoken, rtoken);
 			continue;
+		}
 		if (!ret) {
 			continue;
 		} else if (ret == ERR_INVAL_SKIP) {
@@ -2159,8 +2181,8 @@ int vps_parse_config(envid_t veid, char *path, vps_param *vps_p,
 				"for %s (\"%s\"), skipped",
 				path, line, ltoken, rtoken);
 		} else if (ret == ERR_UNK) {
-			logger(-1, 0, "Warning at %s:%d: unknown parameter "
-				"%s (\"%s\"), skipped",
+			logger(1, 0, "Warning at %s:%d: unknown parameter "
+				"%s (\"%s\"), ignored",
 				path, line, ltoken, rtoken);
 		} else if (ret == ERR_NOMEM) {
 			logger(-1, ENOMEM, "Error while parsing %s:%d",
