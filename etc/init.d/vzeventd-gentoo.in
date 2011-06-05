@@ -41,16 +41,13 @@ start() {
 	load_module || return
 
 	ebegin "Starting vzeventd"
-	start-stop-daemon --start --exec ${VZEVENTD} \
-		--pidfile /var/run/vzeventd.pid \
-		-- ${VZEVENTD_OPTS}
+	start-stop-daemon --start --exec ${VZEVENTD} -- ${VZEVENTD_OPTS}
 	eend $?
 }
 
 stop() {
 	check_config || return
 	ebegin "Stopping vzeventd"
-	start-stop-daemon --stop --exec ${VZEVENTD} \
-		--pidfile /var/run/vzeventd.pid
+	start-stop-daemon --stop --exec ${VZEVENTD}
 	eend $?
 }
