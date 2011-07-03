@@ -23,6 +23,7 @@
 #include <signal.h>
 #include <limits.h>
 
+#include "version.h"
 #include "vzctl.h"
 #include "env.h"
 #include "logger.h"
@@ -44,12 +45,12 @@ int parse_action_opt(envid_t veid, act_t action, int argc, char *argv[],
 int run_action(envid_t veid, act_t action, vps_param *g_p, vps_param *vps_p,
 	vps_param *cmd_p, int argc, char **argv, int skiplock);
 
-void version(FILE *fp)
+static void version(FILE *fp)
 {
 	fprintf(fp, "vzctl version " VERSION "\n");
 }
 
-void usage(int rc)
+static void usage(int rc)
 {
 	struct mod_action mod;
 	FILE *fp = rc ? stderr : stdout;
@@ -85,8 +86,8 @@ void usage(int rc)
 "   [--netif_add <ifname[,mac,host_ifname,host_mac,bridge]]>]\n"
 "   [--netif_del <ifname>]\n"
 "   [--applyconfig <name>] [--applyconfig_map <name>]\n"
-"   [--features <name:on|off>] [--name <vename>]\n"
-"   [--ioprio <N>] [--pci_add [<domain>:]<bus>:<slot>.<func>] [--pci_del <d:b:s.f>]\n"
+"   [--features <name:on|off>] [--name <vename>] [--ioprio <N>]\n"
+"   [--pci_add [<domain>:]<bus>:<slot>.<func>] [--pci_del <d:b:s.f>]\n"
 "   [--iptables <name>] [--disabled <yes|no>]\n"
 "   [UBC parameters]\n"
 "\n"

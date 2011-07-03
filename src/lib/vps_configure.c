@@ -50,7 +50,7 @@ const char *state2str(int state)
 {
 	unsigned int i;
 
-	for (i = 0; i < sizeof(vps_states) / sizeof(*vps_states); i++)
+	for (i = 0; i < ARRAY_SIZE(vps_states); i++)
 		if (vps_states[i].id == state)
 			return vps_states[i].name;
 
@@ -74,8 +74,9 @@ static const char *get_local_ip(vps_param *param)
 	return NULL;
 }
 
-int vps_hostnm_configure(vps_handler *h, envid_t veid, dist_actions *actions,
-	const char *root, char *hostname, const char *ip, int state)
+static int vps_hostnm_configure(vps_handler *h, envid_t veid,
+	dist_actions *actions, const char *root,
+	char *hostname,	const char *ip, int state)
 {
 	char *envp[5];
 	const char *script;
@@ -105,15 +106,14 @@ int vps_hostnm_configure(vps_handler *h, envid_t veid, dist_actions *actions,
 		envp[3] = ipnm;
 	}
 	envp[4] = NULL;
-	logger(0, 0, "Set hostname: %s", hostname);
 	ret = vps_exec_script(h, veid, root, NULL, envp, script, DIST_FUNC,
 		SCRIPT_EXEC_TIMEOUT);
 
 	return ret;
 }
 
-int vps_dns_configure(vps_handler *h, envid_t veid, dist_actions *actions,
-	const char *root, misc_param *net, int state)
+static int vps_dns_configure(vps_handler *h, envid_t veid,
+	dist_actions *actions, const char *root, misc_param *net, int state)
 {
 	char *envp[10];
 	char *str;
@@ -145,7 +145,6 @@ int vps_dns_configure(vps_handler *h, envid_t veid, dist_actions *actions,
 	envp[i] = NULL;
 	ret = vps_exec_script(h, veid, root, NULL, envp, script, DIST_FUNC,
 		SCRIPT_EXEC_TIMEOUT);
-	logger(0, 0, "File resolv.conf was modified");
 	free_arg(envp);
 
 	return ret;
@@ -181,8 +180,8 @@ int vps_pw_configure(vps_handler *h, envid_t veid, dist_actions *actions,
 	return ret;
 }
 
-int vps_quota_configure(vps_handler *h, envid_t veid, dist_actions *actions,
-	const char *root, dq_param *dq, int state)
+static int vps_quota_configure(vps_handler *h, envid_t veid,
+	dist_actions *actions, const char *root, dq_param *dq, int state)
 {
 	char *envp[6];
 	const char *script;
@@ -221,7 +220,6 @@ int vps_quota_configure(vps_handler *h, envid_t veid, dist_actions *actions,
 	}
 	envp[i++] = strdup(ENV_PATH);
 	envp[i] = NULL;
-	logger(0, 0, "Setting quota ugidlimit: %ld", *dq->ugidlimit);
 	ret = vps_exec_script(h, veid, root, NULL, envp, script, DIST_FUNC,
 		SCRIPT_EXEC_TIMEOUT);
 	free_arg(envp);
@@ -303,7 +301,7 @@ int vps_ip_configure(vps_handler *h, envid_t veid, dist_actions *actions,
 
 
 int vps_configure(vps_handler *h, envid_t veid, dist_actions *actions,
-	const char *root, int op, vps_param *param, int state)
+	const char *root, vps_param *param, int state)
 {
 	int ret;
 	vps_res *res = &param->res;

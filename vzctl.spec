@@ -21,8 +21,9 @@
 
 Summary: OpenVZ containers control utility
 Name: vzctl
-Version: 3.0.27
-Release: 1%{?dist}
+Version: 3.0.28
+%define rel 1
+Release: %{rel}%{?dist}
 License: GPL
 Group: System Environment/Kernel
 Source: http://download.openvz.org/utils/%{name}/%{version}/src/%{name}-%{version}.tar.bz2
@@ -35,7 +36,6 @@ URL: http://openvz.org/
 Requires: bash
 Requires: gawk
 Requires: sed
-Requires: ed
 Requires: grep
 Requires: /sbin/chkconfig
 Requires: vzquota >= 2.7.0-4
@@ -47,6 +47,9 @@ Requires: tar
 Requires: rsync
 Requires: gawk
 Requires: openssh
+
+# Virtual provides for newer RHEL6 kernel
+Provides: virtual-vzkernel-install = 2.0.0
 
 %description
 This utility allows system administator to control OpenVZ containers,

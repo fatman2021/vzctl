@@ -1,5 +1,4 @@
-#!/bin/bash
-#  Copyright (C) 2000-2009, Parallels, Inc. All rights reserved.
+#  Copyright (C) 2010-2011, Parallels, Inc. All rights reserved.
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -46,7 +45,7 @@ function comment_line_regex()
 		mv -f ${IFCFG}.$$ ${IFCFG} 2>/dev/null
 	if [ $? -ne 0 ]; then
 		rm -f ${IFCFG}.$$ 2>/dev/null
-		error "Failed to comment ${1}: unable to create ${IFCFG}."
+		error "Failed to comment ${1}: unable to create ${IFCFG}" ${VZ_FS_NO_DISK_SPACE}
 	fi
 }
 
@@ -90,7 +89,7 @@ function add_ip()
 			return 0
 		fi
 	fi
-	
+
 	local ips=""
 	if [ "${VENET_DEV}" = "venet0" ]
 	then

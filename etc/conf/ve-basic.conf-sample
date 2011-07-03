@@ -15,8 +15,6 @@
 #  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 #
 
-ONBOOT="yes"
-
 # UBC parameters (in form of barrier:limit)
 KMEMSIZE="14372700:14790164"
 LOCKEDPAGES="2048:2048"
@@ -41,7 +39,7 @@ AVNUMPROC="180:180"
 NUMIPTENT="128:128"
 
 # Disk quota parameters (in form of softlimit:hardlimit)
-DISKSPACE="1048576:1153024"
+DISKSPACE="2G:2.2G"
 DISKINODES="200000:220000"
 QUOTATIME="0"
 

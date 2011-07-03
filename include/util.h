@@ -42,8 +42,9 @@ char *arg2str(char **arg);
 void free_arg(char **arg);
 unsigned long min_ul(unsigned long val1, unsigned long val2);
 int yesno2id(const char *str);
+int get_addr_family(const char *addr);
 int get_netaddr(const char *ip_str, void *ip);
-const char *get_netname(unsigned int *ip, int family);
+char *canon_ip(const char *str);
 char *subst_VEID(envid_t veid, char *src);
 int get_pagesize();
 int get_mem(unsigned long long *mem);
@@ -52,9 +53,6 @@ int get_swap(unsigned long long *swap);
 int get_num_cpu();
 int get_lowmem(unsigned long long *mem);
 unsigned long max_ul(unsigned long val1, unsigned long val2);
-void str_tolower(const char *from, char *to);
-char *get_file_name(char *str);
-const char *get_vps_state_str(int vps_state);
 int get_dump_file(unsigned veid, const char *dumpdir, char *buf, int size);
 int set_not_blk(int fd);
 void close_fds(int close_std, ...);
@@ -67,6 +65,9 @@ void get_osrelease(vps_res *res);
 
 int get_running_ve_list(envid_t **ves);
 int ve_in_list(envid_t *list, int size, envid_t ve);
+
+const char* ubcstr(unsigned long bar, unsigned long lim);
+int is_vswap_mode(void);
 
 #define logger_enomem(log_level, err, size, file, line)			\
 	logger(log_level, err, "%s:%i: Can't allocate %lu bytes",	\

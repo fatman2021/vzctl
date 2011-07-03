@@ -141,8 +141,10 @@ static vps_config config[] = {
 {"IOPRIO",	NULL, PARAM_IOPRIO},
 {"BOOTORDER",	NULL, PARAM_BOOTORDER},
 
-/* These ones are known parameters for global config file,
- * it's just vzctl is not interested in those
+/* These ones are either known parameters for global config file,
+ * or some obsoleted parameters used in the past. In both cases
+ * vzctl is not interested in those, but it doesn't make sense to
+ * report those as being unknown.
  */
 {"VIRTUOZZO",		NULL, PARAM_IGNORED},
 {"VE0CPUUNITS",		NULL, PARAM_IGNORED},
@@ -152,6 +154,7 @@ static vps_config config[] = {
 {"VZWDOG",		NULL, PARAM_IGNORED},
 {"IPTABLES_MODULES",	NULL, PARAM_IGNORED},
 {"IP6TABLES",		NULL, PARAM_IGNORED},
+{"CONFIG_CUSTOMIZED",	NULL, PARAM_IGNORED},
 
 {NULL,		NULL, -1}
 };
@@ -485,9 +488,12 @@ static int store_env(vps_param *old_p, vps_param *vps_p, vps_config *conf,
 }
 
 /********************** UB **************************************/
-static int get_mul(char c)
+static long long get_mul(char c)
 {
 	switch (c) {
+	case 'T':
+	case 't':
+		return 1024ll * 1024 * 1024 * 1024;
 	case 'G':
 	case 'g':
 		return 1024 * 1024 * 1024;
@@ -511,8 +517,9 @@ static int get_mul(char c)
  */
 static const char *parse_ul_sfx(const char *str, unsigned long long *val, int divisor)
 {
-	int n;
+	long long n;
 	char *tail;
+	long double v = 0;
 
 	if (!str || !val)
 		return NULL;
@@ -524,12 +531,24 @@ static const char *parse_ul_sfx(const char *str, unsigned long long *val, int di
 	*val = strtoull(str, &tail, 10);
 	if (errno == ERANGE)
 		return NULL;
+	v = *val;
+	if (*tail == '.') { /* Floating point */
+		errno = 0;
+		v = strtold(str, &tail);
+		if (errno == ERANGE)
+			return NULL;
+		*val = (unsigned long long) v;
+	}
 	if (*tail != ':' && *tail != '\0') {
 		if (!divisor)
 			return NULL;
 		if ((n = get_mul(*tail)) < 0)
 			return NULL;
-		*val = (*val) * n / divisor;
+		v = v * n / divisor;
+		if (v > (long double) LONG_MAX)
+			*val = LONG_MAX + 1UL; /* Overflow */
+		else
+			*val = (unsigned long long) v;
 		++tail;
 	}
 	return tail;
@@ -643,8 +662,8 @@ static int store_ub(vps_param *old_p, vps_param *vps_p,
 #define ADD_UB_PARAM(res, id)						\
 if (ub->res != NULL) {							\
 	conf = conf_get_by_id(config, id);				\
-	snprintf(buf, sizeof(buf), "%s=\"%lu:%lu\"", conf->name,	\
-		ub->res[0], ub->res[1]);				\
+	snprintf(buf, sizeof(buf), "%s=\"%s\"", conf->name,		\
+		ubcstr(ub->res[0], ub->res[1]));			\
 	if (add_str_param(conf_h, buf))					\
 		return ERR_NOMEM;					\
 }
@@ -686,20 +705,14 @@ static int parse_cap(char *str, cap_param *cap)
 	unsigned long *mask;
 
 	for_each_strtok(token, str, "\t ") {
-		if ((p = strrchr(token, ':')) == NULL) {
-			logger(-1, 0, "Invalid syntaxes in %s:"
-				" capname:on|off", token);
-			return ERR_INVAL;
-		}
+		if ((p = strrchr(token, ':')) == NULL)
+			goto err;
 		if (!strcmp(p + 1, "off"))
 			mask = &cap->off;
 		else if (!strcmp(p + 1, "on"))
 			mask = &cap->on;
-		else {
-			logger(-1, 0, "Invalid syntaxes in %s:"
-				" capname:on|off", token);
-			return ERR_INVAL;
-		}
+		else
+			goto err;
 		len = p - token;
 		strncpy(cap_nm, token,
 			len < sizeof(cap_nm) ? len : sizeof(cap_nm));
@@ -711,6 +724,10 @@ static int parse_cap(char *str, cap_param *cap)
 	}
 
 	return 0;
+err:
+	logger(-1, 0, "Can't parse capability %s (expecting capname:on|off)",
+			token);
+	return ERR_INVAL;
 }
 
 static int store_cap(vps_param *old_p, vps_param *vps_p, vps_config *conf,
@@ -735,28 +752,10 @@ static int store_cap(vps_param *old_p, vps_param *vps_p, vps_config *conf,
 }
 /********************** Network ************************/
 
-static int check_ip_dot(char *ip)
-{
-	int i;
-	char *str = ip;
-	char *p;
-
-	for (i = 0; i < 5; i++) {
-		if ((p = strchr(str, '.')) == NULL)
-			break;
-		str = p + 1;
-	}
-	if (i != 3)
-		return VZ_BADIP;
-	return 0;
-}
-
 static int parse_ip(vps_param *vps_p, char *val, int id)
 {
 	char *token;
-	char dst[INET6_ADDRSTRLEN];
-	unsigned char ip[sizeof(struct in6_addr)];
-	int family;
+	char *dst;
 	net_param *net;
 
 	if (id == PARAM_IP_ADD)
@@ -778,13 +777,8 @@ static int parse_ip(vps_param *vps_p, char *val, int id)
 			continue;
 		if (!strcmp(token, "::0"))
 			continue;
-		if (!strchr(token, ':')) {
-			if (check_ip_dot(token))
-				return ERR_INVAL;
-		}
-		if ((family = get_netaddr(token, ip)) < 0)
-			return ERR_INVAL;
-		if (inet_ntop(family, ip, dst, sizeof(dst)) == NULL)
+		dst = canon_ip(token);
+		if (dst == NULL)
 			return ERR_INVAL;
 		if (!find_ip(&net->ip, dst))
 			add_str_param(&net->ip, dst);
@@ -799,7 +793,6 @@ static int store_ip(vps_param *old_p, vps_param *vps_p, vps_config *conf,
 	list_head_t ip;
 	int ret;
 
-	list_head_init(&ip);
 	if (conf->id != PARAM_IP_ADD)
 		return 0;
 	if (!vps_p->res.net.delall &&
@@ -808,6 +801,7 @@ static int store_ip(vps_param *old_p, vps_param *vps_p, vps_config *conf,
 	{
 		return 0;
 	}
+	list_head_init(&ip);
 	merge_str_list(vps_p->res.net.delall, &old_p->res.net.ip,
 		&vps_p->res.net.ip, &vps_p->del_res.net.ip, &ip);
 	ret = conf_store_strlist(conf_h, conf->name, &ip, 1);
@@ -850,7 +844,6 @@ static int store_netdev(vps_param *old_p, vps_param *vps_p, vps_config *conf,
 	list_head_t dev;
 	int ret;
 
-	list_head_init(&dev);
 	if (conf->id != PARAM_NETDEV_ADD)
 		return 0;
 	if (list_empty(&vps_p->res.net.dev) &&
@@ -858,6 +851,7 @@ static int store_netdev(vps_param *old_p, vps_param *vps_p, vps_config *conf,
 	{
 		return 0;
 	}
+	list_head_init(&dev);
 	merge_str_list(0, &old_p->res.net.dev, &vps_p->res.net.dev,
 		 &vps_p->del_res.net.dev, &dev);
 	ret = conf_store_strlist(conf_h, conf->name, &dev, 1);

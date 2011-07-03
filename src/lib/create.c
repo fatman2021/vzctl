@@ -39,7 +39,10 @@
 #include "create.h"
 #include "destroy.h"
 
+#define VPS_CREATE	LIB_SCRIPTS_DIR "vps-create"
 #define VZOSTEMPLATE	"/usr/bin/vzosname"
+
+static int vps_postcreate(envid_t veid, vps_res *res);
 
 static char *get_ostemplate_name(char *ostmpl)
 {
@@ -66,8 +69,8 @@ static char *get_ostemplate_name(char *ostmpl)
 	return strdup(buf);
 }
 
-int fs_create(envid_t veid, fs_param *fs, tmpl_param *tmpl, dq_param *dq,
-	char *tar_nm)
+static int fs_create(envid_t veid, fs_param *fs, tmpl_param *tmpl,
+	dq_param *dq, char *tar_nm)
 {
 	char tarball[PATH_LEN];
 	char tmp_dir[PATH_LEN];
@@ -76,28 +79,21 @@ int fs_create(envid_t veid, fs_param *fs, tmpl_param *tmpl, dq_param *dq,
 	char *arg[2];
 	char *env[4];
 	int quota = 0;
+	int i;
+	const char *ext[] = { "", ".gz", ".bz2", ".xz", NULL };
+	const char *errmsg_ext = "[.gz|.bz2|.xz]";
 
-	snprintf(tarball, sizeof(tarball), "%s/%s.tar", fs->tmpl, tar_nm);
-	if (!stat_file(tarball)) {
-		char *extensions[3] = { "gz", "bz2", "xz" };
-		int  ext = 0;
-		int  template_found = 0;
-
-		for (; ext < 3; ext++) {
-			snprintf(tarball, sizeof(tarball), "%s/%s.tar.%s", fs->tmpl, tar_nm, extensions[ext]);
-
-			/* Ok. We got it, lets continue */
-			if (stat_file(tarball)) {
-				template_found = 1;
-				break;
-			}
-		}
-
-		if (!template_found) {
-			/* This is reached if no valid container extension was found */
-			logger(-1, 0, "Cached OS template %s not found", tarball);
-			return VZ_OSTEMPLATE_NOT_FOUND;
-		}
+	for (i = 0; ext[i] != NULL; i++) {
+		snprintf(tarball, sizeof(tarball), "%s/%s.tar%s",
+				fs->tmpl, tar_nm, ext[i]);
+		logger(1, 0, "Looking for %s", tarball);
+		if (stat_file(tarball))
+			break;
+	}
+	if (ext[i] == NULL) {
+		logger(-1, 0, "Cached OS template %s/%s.tar%s not found",
+				fs->tmpl, tar_nm, errmsg_ext);
+		return VZ_OSTEMPLATE_NOT_FOUND;
 	}
 
 	/* Lock CT area */
@@ -300,7 +296,7 @@ int vps_create(vps_handler *h, envid_t veid, vps_param *vps_p, vps_param *cmd_p,
 			goto err_private;
 	}
 
-	if ((ret = vps_postcreate(veid, &vps_p->res.fs, &vps_p->res.tmpl)))
+	if ((ret = vps_postcreate(veid, &vps_p->res)))
 		goto err_root;
 	move_config(veid, DESTR);
 	/* store root, private, ostemplate in case default used */
@@ -347,7 +343,7 @@ err:
 	return ret;
 }
 
-int vps_postcreate(envid_t veid, fs_param *fs, tmpl_param *tmpl)
+static int vps_postcreate(envid_t veid, vps_res *res)
 {
 	char buf[STR_SIZE];
 	dist_actions actions;
@@ -356,9 +352,9 @@ int vps_postcreate(envid_t veid, fs_param *fs, tmpl_param *tmpl)
 	char *env[3];
 	int ret;
 
-	if (check_var(fs->root, "VE_ROOT is not set"))
+	if (check_var(res->fs.root, "VE_ROOT is not set"))
 		return VZ_VE_ROOT_NOTSET;
-	dist_name = get_dist_name(tmpl);
+	dist_name = get_dist_name(&res->tmpl);
 	ret = read_dist_actions(dist_name, DIST_DIR, &actions);
 	free(dist_name);
 	if (ret)
@@ -367,18 +363,18 @@ int vps_postcreate(envid_t veid, fs_param *fs, tmpl_param *tmpl)
 		ret = 0;
 		goto err;
 	}
-	ret = fsmount(veid, fs, NULL);
+	ret = fsmount(veid, &res->fs, &res->dq);
 	if (ret)
 		goto err;
 	arg[0] = actions.post_create;
 	arg[1] = NULL;
-	snprintf(buf, sizeof(buf), "VE_ROOT=%s", fs->root);
+	snprintf(buf, sizeof(buf), "VE_ROOT=%s", res->fs.root);
 	env[0] = buf;
 	env[1] = ENV_PATH;
 	env[2] = NULL;
 	logger(0, 0, "Performing postcreate actions");
 	ret = run_script(actions.post_create, arg, env, 0);
-	fsumount(veid, fs->root);
+	fsumount(veid, res->fs.root);
 err:
 	free_dist_actions(&actions);
 	return ret;

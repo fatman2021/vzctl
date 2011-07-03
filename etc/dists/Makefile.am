@@ -132,7 +132,7 @@ install-data-hook: altlinux \
                    centos \
                    debian \
                    fedora \
-		   funtoo \
+                   funtoo \
                    gentoo \
                    mandrake \
                    owl \

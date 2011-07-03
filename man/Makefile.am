@@ -15,25 +15,35 @@
 #  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 #
 
-man_MANS = arpsend.8 \
-           ctid.conf.5 \
-           ndsend.8 \
-           vzcalc.8 \
-           vzcfgvalidate.8 \
-           vz.conf.5 \
-           vzcpucheck.8 \
-           vzctl.8 \
-           vzlist.8 \
-           vzmemcheck.8 \
-           vzmigrate.8 \
-           vzpid.8 \
-           vzsplit.8 \
-           vzifup-post.8 \
-           vzeventd.8 \
-           vzubc.8
+man_MANS = \
+ vzctl.8 \
+ vzlist.8 \
+ vzcpucheck.8 \
+ vzmemcheck.8 \
+ vzcfgvalidate.8 \
+ vzcalc.8 \
+ vzsplit.8 \
+ vzubc.8 \
+ vzmigrate.8 \
+ arpsend.8 \
+ ndsend.8 \
+ vzpid.8 \
+ vzifup-post.8 \
+ vzeventd.8 \
+ $(extra_MANS) \
+ vz.conf.5 \
+ ctid.conf.5
 
+PSS=$(man_MANS:%=%.ps)
+PDFS=$(man_MANS:%=%.pdf)
+WIKIS=$(man_MANS:%=%.wiki)
 
-EXTRA_DIST = $(man_MANS)
+GROFF=groff
+PAPER=$(shell paperconf || echo letter)
+GROFF_OPTS=-Tps -t -dpaper=$(PAPER) -P-p$(PAPER) -man -msafer -rC1 -rD1 -rS11
+GROFF_HTML_OPTS=-Thtml -t -man -msafer
+
+EXTRA_DIST = $(man_MANS) toc.man.in toc.sh html2wiki.sh
 
 check-man-dates:
 	for FILE in $(man_MANS); do \
@@ -43,3 +53,48 @@ check-man-dates:
 		sed -e "1s%\(\.TH \w\w* [0-9] \"\)[0-9]* \w\w* [0-9][0-9][0-9][0-9]%\1$${DATE}%" -i $${FILE}; \
 	done
 	git diff $(man_MANS)
+.PHONY: check-man-dates
+
+%.5.ps:	%.5
+	$(GROFF) $(GROFF_OPTS) $^ > $@
+%.8.ps:	%.8
+	$(GROFF) $(GROFF_OPTS) $^ > $@
+
+all.ps: $(man_MANS)
+	 $(GROFF) $(GROFF_OPTS) $^ > $@
+
+toc.man: toc.man.in toc.sh all.ps
+	sed -ne '/^__TOC__$$/,$$!p' $< | \
+		sed 's/__PKG__/$(PACKAGE_STRING)/' > $@
+	$(srcdir)/toc.sh all.ps >> $@
+	sed -ne '1,/^__TOC__$$/!p' $< >> $@
+
+manual.ps: toc.man $(man_MANS)
+	$(GROFF) $(GROFF_OPTS) $^ > $@
+
+# to create a PDF from a PS
+%.pdf: %.ps
+	ps2pdf $< $@
+
+pdfs: manual.pdf $(PDFS)
+.PHONY: pdfs
+
+%.8.wiki: %.8 html2wiki.sh
+	sed 's/^\.SS \(.*$$\)/.in 0\n=== \1 ===/' $< | \
+	sed 's/^\.SS3 \(.*$$\)/.in 0\n==== \1 ====/' | \
+	$(GROFF) $(GROFF_HTML_OPTS) | \
+		MANS="$(man_MANS)" $(srcdir)/html2wiki.sh > $@
+	rm -f grohtml-*.png
+%.5.wiki: %.5 html2wiki.sh
+	sed 's/^\.SS\(.*$$\)/.in 0\n=== \1 ===/' $< | \
+	$(GROFF) $(GROFF_HTML_OPTS) | \
+		MANS="$(man_MANS)" $(srcdir)/html2wiki.sh > $@
+	rm -f grohtml-*.png
+toc.wiki: $(man_MANS) wikitoc.sh
+	$(srcdir)/wikitoc.sh $(man_MANS) > $@
+
+wikis: $(WIKIS) toc.wiki
+.PHONY: wikis
+
+CLEANFILES=all.ps all.pdf toc.man toc.wiki \
+	   manual.ps manual.pdf $(PSS) $(PDFS) $(WIKIS)

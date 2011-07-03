@@ -18,18 +18,16 @@
 # This config is valid for VSwap-enabled kernel (which currently means
 # any RHEL6-based kernel, i.e. 042test* or 042stab*).
 
-ONBOOT="yes"
-
 # UBC parameters (in form of barrier:limit)
 PHYSPAGES="0:512M"
 SWAPPAGES="0:1G"
-KMEMSIZE="unlimited"
-LOCKEDPAGES="unlimited"
+KMEMSIZE="233M:256M"
+LOCKEDPAGES="256M"
 PRIVVMPAGES="unlimited"
 SHMPAGES="unlimited"
 NUMPROC="unlimited"
-VMGUARPAGES="unlimited"
-OOMGUARPAGES="unlimited"
+VMGUARPAGES="0:unlimited"
+OOMGUARPAGES="0:unlimited"
 NUMTCPSOCK="unlimited"
 NUMFLOCK="unlimited"
 NUMPTY="unlimited"
@@ -44,8 +42,8 @@ NUMFILE="unlimited"
 NUMIPTENT="unlimited"
 
 # Disk quota parameters (in form of softlimit:hardlimit)
-DISKSPACE="1G"
-DISKINODES="200000"
+DISKSPACE="2G:2.2G"
+DISKINODES="200000:220000"
 QUOTATIME="0"
 
 # CPU fair scheduler parameter

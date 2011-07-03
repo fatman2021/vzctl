@@ -42,7 +42,7 @@
 #define NR_OPEN 1024
 #endif
 
-char *unescapestr(char *src)
+static const char *unescapestr(char *src)
 {
 	char *p1, *p2;
 	int fl;
@@ -171,20 +171,6 @@ int parse_ul(const char *str, unsigned long *val)
 	return 0;
 }
 
-void str_tolower(const char *from, char *to)
-{
-	if (from == NULL || to == NULL)
-		return;
-	while ((*to++ = tolower(*from++)));
-}
-
-void str_toupper(const char *from, char *to)
-{
-	if (from == NULL || to == NULL)
-		return;
-	while ((*to++ = toupper(*from++)));
-}
-
 int check_var(const void *val, const char *message)
 {
 	if (val != NULL)
@@ -285,23 +271,70 @@ int yesno2id(const char *str)
 	return -1;
 }
 
-int get_netaddr(const char *ip_str, void *ip)
+int get_addr_family(const char *addr)
 {
-	if (strchr(ip_str, ':')) {
-		if (inet_pton(AF_INET6, ip_str, ip) <= 0)
-			return -1;
+	if (strchr(addr, ':'))
 		return AF_INET6;
-	}
-	if (inet_pton(AF_INET, ip_str, ip) <= 0)
-		return -1;
-	return AF_INET;
+	else
+		return AF_INET;
 }
 
-const char *get_netname(unsigned int *ip, int family)
+int get_netaddr(const char *ip_str, void *ip)
 {
-	static char buf[INET6_ADDRSTRLEN];
+	int family;
 
-	return inet_ntop(family, ip, buf, sizeof(buf));
+	family = get_addr_family(ip_str);
+
+	if (inet_pton(family, ip_str, ip) <= 0)
+		return -1;
+	return family;
+}
+
+static inline int max_netmask(int family)
+{
+	if (family == AF_INET)
+		return 32;
+	else if (family == AF_INET6)
+		return 128;
+	else
+		return -1;
+}
+
+/* Check and "canonicalize" an IP address with optional netmask
+ * (in CIDR notation). Basically */
+char *canon_ip(const char *str)
+{
+	const char *ipstr, *maskstr;
+	int mask, family;
+	unsigned int ip[4];
+	static char dst[INET6_ADDRSTRLEN + sizeof("/128")];
+
+	maskstr = strchr(str, '/');
+	if (maskstr) {
+		ipstr = strndupa(str, maskstr - str);
+		maskstr++;
+	}
+	else {
+		ipstr = str;
+	}
+	family = get_netaddr(ipstr, ip);
+	if (family < 0)
+		return NULL;
+	if ((inet_ntop(family, ip, dst, sizeof(dst))) == NULL)
+		return NULL;
+
+	if (maskstr == NULL)
+		goto out;
+
+	/* Parse netmask */
+	if (parse_int(maskstr, &mask) != 0)
+		return NULL;
+	if (mask > max_netmask(family) || mask < 0)
+		return NULL;
+	sprintf(dst + strlen(dst), "/%d", mask);
+
+out:
+	return dst;
 }
 
 char *subst_VEID(envid_t veid, char *src)
@@ -367,7 +400,7 @@ int get_mem(unsigned long long *mem)
 	}
 	if ((pagesize = get_pagesize()) < 0)
 		return -1;
-	*mem = pages * pagesize;
+	*mem = (unsigned long long) pages * pagesize;
 	return 0;
 }
 
@@ -458,51 +491,6 @@ int get_lowmem(unsigned long long *mem)
 	return 0;
 }
 
-char *get_file_name(char *str)
-{
-	char *p;
-	int len;
-
-	len = strlen(str) - sizeof(".conf") + 1;
-	if (len <= 0)
-	return NULL;
-	if (strcmp(str + len, ".conf"))
-		return NULL;
-	if ((p = malloc(len + 1)) == NULL)
-		return NULL;
-	strncpy(p, str, len);
-	p[len] = 0;
-
-	return p;
-}
-
-const char *get_vps_state_str(int vps_state)
-{
-	const char *p = NULL;
-
-	switch (vps_state) {
-	case STATE_RUNNING:
-		p = "running";
-		break;
-	case STATE_STARTING:
-		p = "starting";
-		break;
-	case STATE_STOPPED:
-		p = "stopped";
-		break;
-	case STATE_STOPPING:
-		p = "stopping";
-		break;
-	case STATE_RESTORING:
-		p = "restoring";
-		break;
-	case STATE_CHECKPOINTING:
-		p = "checkpointing";
-		break;
-	}
-	return p;
-}
-
 int get_dump_file(unsigned veid, const char *dumpdir, char *buf, int size)
 {
 	return snprintf(buf, size, "%s/" DEF_DUMPFILE,
@@ -546,7 +534,7 @@ void close_fds(int close_std, ...)
 	/* build aray of skiped fds */
 	va_start(ap, close_std);
 	skip_fds[0] = -1;
-	for (i = 0; i < (sizeof(skip_fds)/sizeof(skip_fds[0])); i++) {
+	for (i = 0; i < ARRAY_SIZE(skip_fds); i++) {
 		fd = va_arg(ap, int);
 		skip_fds[i] = fd;
 		if (fd == -1)
@@ -789,4 +777,32 @@ int ve_in_list(envid_t *list, int size, envid_t ve)
 {
 	return bsearch(&ve, list, size, sizeof(envid_t),
 			envid_sort_fn) != NULL;
+}
+
+const char* ubcstr(unsigned long bar, unsigned long lim)
+{
+	static char str[64];
+	char *p = str;
+	char *e = p + sizeof(str) - 1;
+
+#define PRINT_UBC(val) \
+	if (val == LONG_MAX) \
+		p += snprintf(p, e - p, "unlimited"); \
+	else \
+		p += snprintf(p, e - p, "%lu", val)
+
+	PRINT_UBC(bar);
+
+	if (bar == lim)
+		return str;
+
+	*p++=':';
+	PRINT_UBC(lim);
+
+	return str;
+}
+
+int is_vswap_mode(void)
+{
+	return (access("/proc/vz/vswap", F_OK) == 0);
 }

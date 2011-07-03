@@ -1,14 +1,18 @@
-.TH vzmigrate 8 "6 Jul 2010" "OpenVZ" "Containers"
+.TH vzmigrate 8 "28 Jun 2011" "OpenVZ" "Containers"
 
 .SH NAME
-vzmigrate - utility for container migration between hardware nodes.
+vzmigrate \- migrate a container between two OpenVZ servers
 
 .SH SYNOPSIS
-.TP
-\fBvzmigrate\fR [\fB-r\fR|\fB--remove-area\fR \fByes\fR|\fBno\fR] \
-[\fB--ssh=\fIssh_options\fR] [\fB--rsync=\fIrsync_options\fR] \
-[\fB--keep-dst\fR] [\fB--online\fR] [\fB-v\fR] \fIdestination_address\fR \fICTID\fR
-
+.SY vzmigrate
+.OP -r\fR|\fB--remove-area\ \fByes\fR|\fBno
+.OP --ssh=\fIssh_options
+.OP --rsync=\fIrsync_options
+.OP --keep-dst
+.OP --online
+.OP -v
+.I destination_address CTID
+.YS
 .SH DESCRIPTION
 This utility is used to migrate a container from one (source) Hardware Node (HN)
 to another (destination) HN. The utility can migrate either stopped or running
@@ -22,7 +26,7 @@ entering password.
 
 .SH OPTIONS
 .TP
-\fB-r\fR, \fB--remove-area\fR \fByes\fR|\fBno\fR
+\fB-r\fR, \fB--remove-area\fR \fByes\fR | \fBno\fR
 Whether to remove a container area on source HN for the successfully
 migrated container. Default is \fByes\fR.
 
@@ -57,17 +61,17 @@ its progress.  Multiple \fB-v\fR options increase the verbosity.
 The maximum is 3.
 
 .SH EXAMPLES
-Migration of CT #101 to \fI192.168.1.130\fR with downtime:
-.br
-\f(CR	vzmigrate 192.168.1.130 101
-\fR
-.br
+Migration of CT #101 to \fB192.168.1.130\fR with downtime:
+.PP
+.EX
+   vzmigrate 192.168.1.130 101
+.EE
 
-Online migration of CT #102 to \fI192.168.1.130\fR:
-.br
-\f(CR	vzmigrate --online 192.168.1.130 102
-\fR
-
+Online migration of CT #102 to \fB192.168.1.130\fR:
+.PP
+.EX
+   vzmigrate --online 192.168.1.130 102
+.EE
 .SH EXIT STATUS
 .TP
 .B 0 EXIT_OK
@@ -103,7 +107,6 @@ on the destination node.
 .TP
 .B 13 EXIT_QUOTA
 Operation with CT quota failed.
-
 
 .SH SEE ALSO
 .BR rsync (1).

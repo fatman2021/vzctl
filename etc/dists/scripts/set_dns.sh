@@ -30,7 +30,7 @@ function set_dns()
 	fi
 	if [ -n "${server}" ]; then
 		[ -f ${cfgfile} ] || touch ${cfgfile}
-		sed "/nameserver.*/d" < ${cfgfile} > ${cfgfile}.$$ &&
+		grep -v '^\s*nameserver\s' ${cfgfile} > ${cfgfile}.$$ &&
 			mv -f ${cfgfile}.$$ ${cfgfile} ||
 			error "Can't change file ${cfgfile}" ${VZ_FS_NO_DISK_SPACE}
 		for srv in ${server}; do
@@ -40,7 +40,18 @@ function set_dns()
 	chmod 644 ${cfgfile}
 }
 
+gen_resolvconf() {
+	local ns
+	[ -n "${SEARCHDOMAIN}" ] && echo "search ${SEARCHDOMAIN}"
+	for ns in ${NAMESERVER}; do
+		echo "nameserver $ns"
+	done
+}
 
-set_dns /etc/resolv.conf "${NAMESERVER}" "${SEARCHDOMAIN}"
+if which resolvconf >/dev/null 2>&1; then
+	gen_resolvconf | resolvconf -a venet0
+else
+	set_dns /etc/resolv.conf "${NAMESERVER}" "${SEARCHDOMAIN}"
+fi
 
 exit 0

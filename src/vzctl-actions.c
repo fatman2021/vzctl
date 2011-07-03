@@ -34,6 +34,7 @@
 #include "config.h"
 #include "vzerror.h"
 #include "create.h"
+#include "destroy.h"
 #include "util.h"
 #include "lock.h"
 #include "vps_configure.h"
@@ -139,7 +140,7 @@ static struct option set_opt[] = {
 	{NULL, 0, NULL, 0}
 };
 
-int parse_opt(envid_t veid, int argc, char *argv[], struct option *opt,
+static int parse_opt(envid_t veid, int argc, char *argv[], struct option *opt,
 	vps_param *param)
 {
 	int c, ret;
@@ -492,8 +493,36 @@ err_syntax:
 	return VZ_INVALID_PARAMETER_SYNTAX;
 }
 
+static int check_set_ugidlimit(unsigned long *cur, unsigned long *old,
+		int loud)
+{
+	unsigned long c, o = 0;
+
+	if (!cur)
+		return 0;
+	c = *cur;
+	if (old)
+		o = *old;
+
+	if (c != 0 && o == 0) {
+		if (loud)
+			logger(-1, 0, "Unable to turn on second-level"
+				" disk quota on a running container");
+		return 1;
+	}
+
+	if (c == 0 && o != 0) {
+		if (loud)
+			logger(-1, 0, "Unable to turn off second-level"
+				" disk quota on a running container");
+		return 1;
+	}
+
+	return 0;
+}
+
 /* Check parameters that can't be set on running CT */
-int check_set_mode(vps_handler *h, envid_t veid, int setmode, int apply,
+static int check_set_mode(vps_handler *h, envid_t veid, int setmode, int apply,
 	vps_res *new_res, vps_res *old_res)
 {
 	int found = 0;
@@ -531,20 +560,9 @@ int check_set_mode(vps_handler *h, envid_t veid, int setmode, int apply,
 					"on a running container");
 		found++;
 	}
-	/* Setting/changing quotaugidlimit */
-	if (new_res->dq.ugidlimit) {
-		if (!old_res->dq.ugidlimit) {
-			if (loud)
-				logger(-1, 0, "Unable to turn on second-level"
-					" disk quota on a running container");
-			found++;
-		} else if (*new_res->dq.ugidlimit != *old_res->dq.ugidlimit) {
-			if (loud)
-				logger(-1, 0, "Unable to change quota ugid "
-					"limit on a running container");
-			found++;
-		}
-	}
+	/* Turning quota ugid limit on/off */
+	found += check_set_ugidlimit(new_res->dq.ugidlimit,
+			old_res->dq.ugidlimit, loud);
 	/* Enabling/disabling DISK_QUOTA */
 	if ( (new_res->dq.enable) &&
 			(new_res->dq.enable != old_res->dq.enable) ) {
