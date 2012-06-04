@@ -362,7 +362,7 @@ change_hostname()
 			if (ate_ipv6) {
 				print my_ipv6;
 			} else {
-				print "::1 localhost";
+				print "::1 localhost.localdomain localhost";
 			}
 		}
 	' < ${cfg} > ${cfg}.$$
