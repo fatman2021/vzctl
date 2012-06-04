@@ -105,6 +105,8 @@ set_network()
 	file=${VE_ROOT}"/etc/resolv.conf"
 	if [ ! -e "${file}" ]; then
 		touch ${file}
+		# ensure world-readable permissions
+		chmod 0644 ${file}
 	fi
 }
 
