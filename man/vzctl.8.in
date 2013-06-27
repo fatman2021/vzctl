@@ -6,7 +6,7 @@
 .ne (2v + 1u)
 .if \\n[.$] \&\\$*
 ..
-.TH vzctl 8 "6 Apr 2012" "OpenVZ" "Containers"
+.TH vzctl 8 "17 May 2013" "OpenVZ" "Containers"
 .SH NAME
 vzctl \- perform various operations on an OpenVZ container
 .SH SYNOPSIS
@@ -26,24 +26,31 @@ vzctl \- perform various operations on an OpenVZ container
 .OP --force
 .OP --fast
 .SY vzctl
-[\fIflags\fR] \fBchkpnt\fR | \fBrestore\fR
+[\fIflags\fR] \fBsuspend\fR | \fBresume\fR \fICTID\fR
 .OP --dumpfile name
 .SY vzctl
-[\fIflags\fR] \fBsnapshot\fR
+[\fIflags\fR] \fBsnapshot\fR \fICTID\fR
 .OP --id uuid
 .OP --name name
 .OP --description desc
 .OP --skip-suspend
+.OP --skip-config
 .SY vzctl
-[\fIflags\fR] \fBsnapshot-switch\fR | \fBsnapshot-delete\fR \fB--id\fR \fIuuid\fR
+[\fIflags\fR] \fBsnapshot-switch\fR | \fBsnapshot-delete\fR \fICTID\fR \fB--id\fR \fIuuid\fR
 .SY vzctl
-[\fIflags\fR] \fBsnapshot-list\fR
+[\fIflags\fR] \fBsnapshot-mount\fR \fICTID\fR \fB--id\fR \fIuuid\fR
+\fB--target\fR \fIdir\fR
+.SY vzctl
+[\fIflags\fR] \fBsnapshot-umount\fR \fICTID\fR \fB--id\fR \fIuuid\fR
+.SY vzctl
+[\fIflags\fR] \fBsnapshot-list\fR \fICTID\fR [\fB-H\fR] [\fB-o\fR \fIfield\fR[,\fIfield\fR...] [\fB--id\fR \fIuuid\fR]
 .SY vzctl
 [\fIflags\fR] \fBset\fR \fICTID\fR \fI--parameter value\fR [\.\.\.]
 .OP --save
 .OP --force
-.OP --reset_ub
 .OP --setmode \fBrestart\fR|\fBignore
+.SY vzctl
+[\fIflags\fR] \fBset\fR \fICTID\fR \fB--reset_ub\fR
 .SY vzctl
 [\fIflags\fR] \fBdestroy\fR | \fBdelete\fR | \fBmount\fR | \fBumount\fR |
 \fBstatus\fR | \fBquotaon\fR | \fBquotaoff\fR | \fBquotainit\fR \fICTID\fR
@@ -52,6 +59,8 @@ vzctl \- perform various operations on an OpenVZ container
 .SY vzctl
 [\fIflags\fR] \fBconvert\fR \fICTID\fR
 .OP --layout \fBploop\fR[\fB:\fR{\fBexpanded\fR|\fBplain\fR|\fBraw\fR}]
+.SY vzctl
+[\fIflags\fR] \fBcompact\fR \fICTID\fR
 .SY vzctl
 [\fIflags\fR] \fBexec\fR | \fBexec2\fR \fICTID\fR
 \fIcommand\fR [\fIarg\fR ...]
@@ -84,7 +93,7 @@ some output.
 Increments logging level up from the default. Can be used multiple times.
 Default value is set to the value of \fBVERBOSE\fR parameter in the global
 configuration file \fBvz.conf\fR(5), or to \fB0\fR if not set by
-\fBVERBOSE\fR parameter.
+\fBViERBOSE\fR parameter.
 
 .SS Setting container parameters
 .SY set
@@ -94,6 +103,7 @@ configuration file \fBvz.conf\fR(5), or to \fB0\fR if not set by
 .OP --bootorder number
 .OP --root path
 .OP --private path
+.OP --mount_opts options
 .OP --userpasswd user\fR:\fIpass
 .OP --disabled \fByes\fR|\fBno
 .OP --name name
@@ -155,8 +165,6 @@ configuration file \fBvz.conf\fR(5), or to \fB0\fR if not set by
 .OP --diskinodes num
 .OP --quotatime seconds
 .OP --quotaugidlimit num
-.\" Mount option
-.OP --noatime \fByes\fR|\fBno
 .\" Capability
 .OP --capability capname\fR:\fBon\fR|\fBoff\fR[\fB,\fR...]
 .\" Device access management
@@ -191,27 +199,31 @@ If this flag is given, parameters are saved in container configuration file
 .TP
 .B --force
 If this flag is given together with \fB--save\fR, parameters are saved
-even if the current kernel doesn't support OpenVZ.
+even if the current kernel doesn't support OpenVZ. Note this flag
+does not make sense without \fB--save\fR, so \fB--save\fR is required.
 .TP
 .B --reset_ub
 If this flag is given, \fBvzctl\fR applies all User Beancounter parameters
 from the configuration file to a running container. This is helpful
 in case configuration file is modified manually. Please note this flag
-is not compatible with \fB--save\fR, and it is usually a bad idea
-to combine it with any other options.
+is exclusive, i.e. it can not be combined with any other options or flags.
 .TP
 \fB--setmode\fR \fBrestart\fR | \fBignore\fR
 A few parameters can only be applied by restarting the container.
-By default, \fBvzctl\fR warns if such parameters are present and a container
-is running. Use \fB--setmode restart\fR to restart a container in such a case,
-or \fB--setmode ignore\fR to suppress the above mentioned warning.
+By default, \fBvzctl\fR prints a warning if such parameters are supplied
+and a container is running. Use \fB--setmode restart\fR
+together with \fB--save\fR flag to restart a container in such a case,
+or \fB--setmode ignore\fR to suppress the warning.
 
 .SS3 Miscellaneous
 .TP
 \fB--onboot\fR \fByes\fR | \fBno\fR
 Sets whether the container will be started during system boot.
-The container will not be auto-started unless this parameter
-is set to \fByes\fR.
+The container will be started on boot by \fBvz\fR initscript if
+either this parameter is set to \fByes\fR, or the container was running
+just before last reboot, and this parameter is not set to \fBno\fR.
+Default value is unset, meaning the container will be started if
+it was running before the last reboot.
 .TP
 \fB--bootorder\fR \fInumber\fR
 Sets the boot order priority for this CT. The higher the \fInumber\fR is,
@@ -231,15 +243,20 @@ This is a directory in which all the container's files are stored.
 Argument can contain literal string \fB$VEID\fR, which will be
 substituted with the numeric CT ID.
 .TP
+\fB--mount_opts\fR \fIoption\fR[\fB,\fIoption\fR...]
+Sets additional mount options for container file system. Only applicable
+for \fBploop\fR layout, ignored otherwise.
+.TP
 \fB--userpasswd\fR \fIuser\fR:\fIpassword\fR
 Sets password for the given user in a container, creating the user if
 it does not exists.
 Note that this option is not saved in configuration file at all (so
-\fB--save\fR flag is useless), it is applied to the container (by modifying its
-\fB\f(CR/etc/passwd\fR and \fB\f(CR/etc/shadow\fR files).
+\fB--save\fR flag is useless), it is applied directly to the container,
+by running distribution-specific programs inside the container.
+It is not recommended to combine this option with any other options.
 
-In case container root filesystem is not mounted, it is automatically mounted,
-then all the appropriate file changes are applied, then it is unmounted.
+In case container was not running, it is automatically started
+then all the appropriate changes are applied, then it is stopped.
 
 Note that container should be created before using this option.
 .TP
@@ -249,7 +266,8 @@ use \fBvzctl start --force\fR.
 .TP
 \fB--name\fR \fIname\fR
 Add a name for a container. The \fIname\fR can later be used in
-subsequent calls to \fBvzctl\fR in place of \fICTID\fR.
+subsequent calls to \fBvzctl\fR in place of \fICTID\fR. Note this
+option can not be used without \fB--save\fR.
 .TP
 \fB--description\fR \fIstring\fR
 Add a textual description for a container.
@@ -646,15 +664,19 @@ a global value (\fBDISK_QUOTA\fR) from \fBvz.conf\fR(5) is used.
 Note that this parameter is ignored for \fBploop\fR layout.
 .TP
 \fB--diskspace\fR \fInum\fR[:\fInum\fR]
-For \fBsimfs\fR layout, sets soft and hard disk quota limits, in blocks.
-First parameter is soft limit,
-second is hard limit. One block is currently equal to 1Kb.
+For \fBsimfs\fR layout, sets soft and hard disk quota limits.
+First parameter is soft limit, second is hard limit.
 
-For \fBploop\fR layout, sets the size of the ploop image file, in
-kilobytes.
+For \fBploop\fR layout, initiates the procedure of resizing
+the ploop image file to the new size. Since there is no soft/hard
+limit concept in ploop, second \fInum\fR, if specified, is ignored.
+Note that such resize is NOT performed on container start, so
+for consistency \fB--diskspace\fR must be used together
+with \fB--save\fR flag.
 
 Suffixes \fBG\fR, \fBM\fR, \fBK\fR can also be specified
 (see \fBResource limits\fR section for more info on suffixes).
+If suffix is not specified, value is in kilobytes.
 .TP
 \fB--diskinodes\fR \fInum\fR[:\fInum\fR]
 sets soft and hard disk quota limits, in i-nodes. First parameter is
@@ -683,11 +705,6 @@ is not limited by OpenVZ.
 
 Note that enabling or disabling in-container disk quotas requires container
 restart, so consider using \fB--setmode\fR option.
-
-.SS3 Mount option
-.TP
-\fB--noatime\fR \fByes\fR | \fBno\fR
-Sets noatime flag (do not update inode access times) on filesystem.
 
 .SS3 Capability option
 .TP
@@ -746,7 +763,7 @@ Delete a PCI device from the container.
 
 Note that \fBvps-pci\fR configuration script is executed by \fBvzctl\fR
 then configuring PCI devices. The script is usually located at
-\fB/usr/lib[64]/vzctl/scripts/\fR.
+\fB/usr/libexec/vzctl/scripts/\fR.
 
 .SS3 Features management
 .TP
@@ -778,19 +795,19 @@ Assigns I/O priority to container. \fIPriority\fR range is \fB0-7\fR.
 The greater \fIpriority\fR is, the more time for I/O activity container has.
 By default each container has \fIpriority\fR of \fB4\fR.
 
-.SS Checkpointing and restore
+.SS Suspending and resuming
 
 Checkpointing is a feature of OpenVZ kernel which allows to save a complete
-state of a running container, and to restore it later.
+in-kernel state of a running container, and to restore it later.
 .TP 4
-\fBchkpnt\fR \fICTID\fR [\fB--dumpfile\fR \fIname\fR]
-This command saves a complete state of a running container to a dump file,
-and stops the container. If an option \fB--dumpfile\fR is not set, default
+\fBsuspend\fR|\fBchkpnt\fR \fICTID\fR [\fB--dumpfile\fR \fIname\fR]
+This command suspends a container to a dump file
+If an option \fB--dumpfile\fR is not set, default
 dump file name \fB/vz/dump/Dump.\fICTID\fR is used.
 .TP 4
-\fBrestore\fR \fICTID\fR [\fB--dumpfile\fR \fIname\fR]
+\fBresume\fR|\fBrestore\fR \fICTID\fR [\fB--dumpfile\fR \fIname\fR]
 This command restores a container from the dump file created by the
-\fBchkpnt\fR command.
+\fBsuspend\fR command.
 
 .SS Snapshotting
 
@@ -800,14 +817,19 @@ the container is running, it's in-memory state (as in checkpointing).
 Note that snapshot functionality is only working
 for containers on ploop device.
 .TP 4
-\fBsnapshot\fR \fICTID\fR [\fB--id \fIuuid\fR] [\fB--name \fIname\fR] [\fB--description \fIdesc\fR] [\fB--skip-suspend\fR]
-Creates a container snapshot. If \fIuuid\fR is not specified, it is
-auto-generated.
+\fBsnapshot\fR \fICTID\fR [\fB--id \fIuuid\fR] [\fB--name \fIname\fR] [\fB--description \fIdesc\fR] [\fB--skip-suspend\fR] [\fB--skip-config\fR]
+Creates a container snapshot, i.e. saves the current container state,
+including its file system state, running processes state,
+and configuration file.
 
 If a container is running, and \fB--skip-suspend\fR option is not specified,
 a container is checkpointed and then restored, and CT memory dump becomes the
-part of snapshot. Otherwise, only file system state is saved.
+part of snapshot.
 
+Unless \fB--skip-config\fR option is given, container configuration file
+is saved to the snapshot.
+
+If \fIuuid\fR is not specified, it is auto-generated.
 Options \fB--name\fR and \fB--description\fR can be used to specify the
 snapshot name and description, respectively. Name is displayed by
 \fBsnapshot-list\fR.
@@ -816,13 +838,25 @@ snapshot name and description, respectively. Name is displayed by
 Switches the container to a snapshot identified by \fIuuid\fR.
 Note that the current container state and its file system state is lost!
 If given snapshot contains CT memory dump, it is restored, otherwise
-it is stopped.
+container is stopped.
 .TP 4
 \fBsnapshot-delete\fR \fICTID\fR \fB--id\fR \fIuuid\fR
 Removes a specified snapshot.
 .TP 4
-\fBsnapshot-list\fR \fICTID\fR
-Lists all snapshots. Active snapshot is marked with \fB*\fR sign.
+\fBsnapshot-mount\fR \fICTID\fR \fB--id\fR \fIuuid\fR \fB--target\fR \fIdirectory\fR
+Mounts a snapshot specified by \fIuuid\fR to a \fIdirectory\fR. Note
+this mount is read-only.
+.TP 4
+\fBsnapshot-umount\fR \fICTID\fR \fB--id\fR \fIuuid\fR
+Unmounts a specified snapshot.
+.TP 4
+\fBsnapshot-list\fR \fICTID\fR [\fB-H\fR] [\fB-o\fR \fIfield\fR[,\fIfield\fR...] [\fB--id\fR \fIuuid\fR]
+List container's snapshots.
+
+You can suppress displaying header using \fB-H\fR option.
+
+You can use the \fB-o\fR option to display only the specified \fIfield\fR(s).
+List of available fields can be obtained using \fB-L\fR option.
 
 .SS Performing container actions
 
@@ -837,6 +871,8 @@ Lists all snapshots. Active snapshot is marked with \fB*\fR sign.
 .OP --ipadd addr
 .OP --hostname name
 .OP --name name
+.OP --local_uid uid
+.OP --local_gid gid
 .YS
 .IP "" 4
 Creates a new container area. This operation should be done once, before
@@ -861,9 +897,14 @@ parameter of \fBvz.conf\fR(5) and can be overwritten by \fB--layout\fR
 option. In case \fBploop\fR is used, one can additionally specify ploop
 disk image format after a colon. Possible ploop formats are \fBexpanded\fR,
 \fBplain\fR and \fBraw\fR. Default is \fBexpanded\fR.
-Using \fBraw\fR is not recommended and is not supported.
+Using value other than \fBexpanded\fR is not recommended and is currently
+not supported.
 
 You can use \fB--diskspace\fR option to specify container file system size.
+If DISKSPACE is not specified either in the sample configuration file used
+or in global configuration file \fBvz.conf\fR(5), this parameter
+is required for \fBploop\fR layout.
+
 Suffixes \fBG\fR, \fBM\fR, \fBK\fR can also be specified
 (see \fBResource limits\fR section for more info on suffixes).
 
@@ -883,6 +924,21 @@ a container. Note that this option can be used multiple times.
 
 You can use \fB--hostname\fR \fIname\fR option to set a host name for
 a container.
+
+When running with an upstream Linux Kernel that supports user namespaces (>=
+3.8), the parameters \fB--local_uid\fR and \fB--local_gid\fR can be used to
+select which \fIuid\fR and \fIgid\fR respectively will be used as a base user
+in the host system. Note that user namespaces provide a 1:1 mapping between
+container users and host users. If these options are not specified, the values
+\fBLOCAL_UID\fR and \fBLOCAL_GID\fR from global configuration file
+\fBvz.conf\fR(5) are used. An explicit \fB--local_uid\fR value of 0 will
+disable user namespace support, and run the container as a privileged user. In
+this case, \fB--local_gid\fR is ignored.
+
+\fBWarning:\fR use \fB--local_uid\fR and \fB--local_gid\fR with care, specially
+when migrating containers. In all situations, the container's files in the
+filesystem needs to be correctly owned by the host-side users.
+
 .IP "\fBdestroy\fR | \fBdelete\fR \fICTID\fR" 4
 Removes a container private area by deleting all files, directories and
 the configuration file of this container.
@@ -929,8 +985,8 @@ it can be either \fBmounted\fR or \fBunmounted\fR.
 Fifth word shows if the container is running,
 it can be either \fBrunning\fR or \fBdown\fR.
 
-Sixth word, if exists, is \fBsuspended\fR. It appears if both a container
-and its dump file exist (see \fBchkpnt\fR).
+Sixth word, if exists, is \fBsuspended\fR. It appears if
+a dump file exists for a stopped container (see \fBsuspend\fR).
 
 This command can also be usable from scripts.
 .IP "\fBmount\fR \fICTID\fR" 4
@@ -947,6 +1003,8 @@ Note that \fBstop\fR does \fBumount\fR automatically.
 Convert CT private area to reside on a ploop device (available in kernel
 version 042stab052.8 and greater). Conversion should be performed when
 a container is stopped, plus disk space quota should be set.
+.IP "\fBcompact\fR \fICTID\fR" 4
+Compact container image. This only makes sense for ploop layout.
 .IP "\fBquotaon\fR \fICTID\fR" 4
 Turn disk quota on. Not that \fBmount\fR and \fBstart\fR does that
 automatically.
@@ -1000,7 +1058,7 @@ Note the consoles are persistent, meaning that:
 \(bu detaching from the console leaves anything running in this console as is.
 
 The following escape sequences are recognized by \fBvzctl console\fR.
-Note that these sequences are only recognized after \fBEnter\fR.
+Note that these sequences are only recognized at the beginning of a line.
 
 \(bu \fBEsc\fR then \fB.\fR to detach from the console.
 
@@ -1110,9 +1168,9 @@ Container configuration file \fBctid.conf\fR(5) not found
 .IP 15
 Timeout on \fBvzctl exec\fR
 .IP 16
-Error during \fBvzctl chkpnt\fR
+Error during \fBvzctl suspend\fR
 .IP 17
-Error during \fBvzctl restore\fR
+Error during \fBvzctl resume\fR
 .IP 18
 Error from \fBsetluid()\fR syscall
 .IP 20
@@ -1168,7 +1226,7 @@ Container private area not exist
 .IP 62
 \fBvzquota setlimit\fR failed
 .IP 63
-Parameter \fBDISKSPACE\fR not set (or set too high)
+Parameter \fBDISKSPACE\fR not set
 .IP 64
 Parameter \fBDISKINODES\fR not set
 .IP 65
@@ -1193,6 +1251,8 @@ Error setting devices (\fB--devices\fR or \fB--devnodes\fR)
 IP address not available
 .IP 91
 OS template not found
+.IP 99
+Ploop is not supported by either the running kernel or vzctl.
 .IP 100
 Unable to find container IP address
 .IP 104
@@ -1237,6 +1297,10 @@ Error merging ploop snapshot
 Error deleting ploop snapshot
 .IP 159
 Error switching  ploop snapshot
+.IP 166
+Error compacting ploop image
+.IP 167
+Error listing ploop snapsots
 .SH EXAMPLES
 To create and start "basic" container with ID of 1000 using
 \fBcentos-5\fR OS template and IP address of 192.168.10.200:
@@ -1332,4 +1396,4 @@ To permanently remove this container:
 .BR vzubc (8),
 .BR http://wiki.openvz.org/UBC .
 .SH LICENSE
-Copyright (C) 2000-2011, Parallels, Inc. Licensed under GNU GPL.
+Copyright (C) 2000-2013, Parallels, Inc. Licensed under GNU GPL.

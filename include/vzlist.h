@@ -79,7 +79,8 @@ struct Ccpustat {
 };
 
 struct Ccpu {
-	unsigned long limit[2];		// 0-limit, 1-units
+	unsigned long limit[1];
+	unsigned long units[1];
 };
 
 struct Cio {
@@ -93,8 +94,12 @@ struct Cveinfo {
 	char *description;
 	char *ostemplate;
 	char *ip;
+	char *nameserver;
+	char *searchdomain;
 	char *private;
 	char *root;
+	char *mount_opts;
+	char *origin_sample;
 	struct Cubc *ubc;
 	struct Cquota *quota;
 	struct Ccpustat *cpustat;
@@ -104,6 +109,7 @@ struct Cveinfo {
 	int hide;
 	int onboot;
 	int cpunum;
+	int disabled;
 	unsigned long *bootorder;
 	int layout; // VE_LAYOUT_*
 	unsigned long long features_mask;

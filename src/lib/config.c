@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2000-2011, Parallels, Inc. All rights reserved.
+ *  Copyright (C) 2000-2013, Parallels, Inc. All rights reserved.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -15,9 +15,6 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
@@ -37,7 +34,7 @@
 #include "logger.h"
 #include "list.h"
 #include "bitmap.h"
-#include "config.h"
+#include "vzconfig.h"
 #include "vzctl_param.h"
 #include "vzerror.h"
 #include "util.h"
@@ -112,7 +109,7 @@ static vps_config config[] = {
 {"VE_ROOT",	NULL, PARAM_ROOT},
 {"VE_PRIVATE",	NULL, PARAM_PRIVATE},
 {"TEMPLATE",	NULL, PARAM_TEMPLATE},
-{"NOATIME",	NULL, PARAM_NOATIME},
+{"MOUNT_OPTS",	NULL, PARAM_MOUNT_OPTS},
 {"VE_LAYOUT",	NULL, PARAM_VE_LAYOUT},
 /*	template     */
 {"OSTEMPLATE",	NULL, PARAM_OSTEMPLATE},
@@ -128,6 +125,10 @@ static vps_config config[] = {
 {"CONFIGFILE",	NULL, PARAM_CONFIG},
 {"ORIGIN_SAMPLE",NULL,PARAM_CONFIG_SAMPLE},
 {"DISABLED",	NULL, PARAM_DISABLED},
+#ifdef HAVE_UPSTREAM
+{"LOCAL_UID",	NULL, PARAM_LOCAL_UID},
+{"LOCAL_GID",	NULL, PARAM_LOCAL_GID},
+#endif
 /* quota */
 {"DISK_QUOTA",	NULL, PARAM_DISK_QUOTA},
 {"DISKSPACE",	NULL, PARAM_DISKSPACE},
@@ -158,6 +159,7 @@ static vps_config config[] = {
 {"IPTABLES_MODULES",	NULL, PARAM_IGNORED},
 {"IP6TABLES",		NULL, PARAM_IGNORED},
 {"CONFIG_CUSTOMIZED",	NULL, PARAM_IGNORED},
+{"VE_STOP_MODE",	NULL, PARAM_IGNORED},
 
 {NULL,		NULL, -1}
 };
@@ -293,6 +295,16 @@ static int conf_parse_bitmap(unsigned long **dst, int nmaskbits,
 		return ERR_INVAL;
 	}
 	return 0;
+}
+
+static int conf_parse_guid(char **dst, const char *val)
+{
+	char guid[64];
+
+	if (vzctl_get_normalized_guid(val, guid, sizeof(guid)))
+		return ERR_INVAL;
+
+	return conf_parse_str(dst, guid);
 }
 
 static int conf_store_strlist(list_head_t *conf, char *name, list_head_t *val,
@@ -518,7 +530,8 @@ static long long get_mul(char c)
 
 /* This function parses string in form xxx[GMKPB]
  */
-static const char *parse_ul_sfx(const char *str, unsigned long long *val, int divisor)
+static const char *parse_ul_sfx(const char *str, unsigned long long *val,
+		int divisor, int allow_unlimited)
 {
 	long long n;
 	char *tail;
@@ -526,7 +539,7 @@ static const char *parse_ul_sfx(const char *str, unsigned long long *val, int di
 
 	if (!str || !val)
 		return NULL;
-	if (!strncmp(str, "unlimited", 9)) {
+	if (allow_unlimited && !strncmp(str, "unlimited", 9)) {
 		*val = LONG_MAX;
 		return str + 9;
 	}
@@ -560,12 +573,13 @@ static const char *parse_ul_sfx(const char *str, unsigned long long *val, int di
 /* This function parses string in form xxx[GMKPB]:yyy[GMKPB]
  * If :yyy is omitted, it is set to xxx.
  */
-static int parse_twoul_sfx(const char *str, unsigned long *val, int divisor)
+static int parse_twoul_sfx(const char *str, unsigned long *val,
+		int divisor, int allow_unlimited)
 {
 	unsigned long long tmp;
 	int ret = 0;
 
-	if (!(str = parse_ul_sfx(str, &tmp, divisor)))
+	if (!(str = parse_ul_sfx(str, &tmp, divisor, allow_unlimited)))
 		return ERR_INVAL;
 	if (tmp > LONG_MAX) {
 		tmp = LONG_MAX;
@@ -573,7 +587,7 @@ static int parse_twoul_sfx(const char *str, unsigned long *val, int divisor)
 	}
 	val[0] = tmp;
 	if (*str == ':') {
-		str = parse_ul_sfx(++str, &tmp, divisor);
+		str = parse_ul_sfx(++str, &tmp, divisor, allow_unlimited);
 		if (!str || *str != '\0')
 			return ERR_INVAL;
 		if (tmp > LONG_MAX) {
@@ -645,7 +659,7 @@ static int parse_ub(vps_param *vps_p, const char *val, int id, int divisor)
 
 	if (conf_get_by_id(config, id) == NULL)
 		return ERR_OTHER;
-	ret = parse_twoul_sfx(val, res.limit, divisor);
+	ret = parse_twoul_sfx(val, res.limit, divisor, 1);
 	if (ret && ret != ERR_LONG_TRUNC)
 		return ret;
 	res.res_id = id;
@@ -683,7 +697,7 @@ static int parse_vswap(ub_param *ub, const char *val, int id, int force)
 	if (conf_get_by_id(config, id) == NULL)
 		return ERR_OTHER;
 
-	tail = parse_ul_sfx(val, &tmp, 1);
+	tail = parse_ul_sfx(val, &tmp, 1, 1);
 	if (tail == NULL)
 		return ERR_INVAL;
 	if (*tail != '\0')
@@ -765,8 +779,9 @@ static int parse_cap(char *str, cap_param *cap)
 		else
 			goto err;
 		len = p - token;
-		strncpy(cap_nm, token,
-			len < sizeof(cap_nm) ? len : sizeof(cap_nm));
+		if (len + 1 > sizeof(cap_nm))
+			return ERR_INVAL;
+		strncpy(cap_nm, token, len);
 		cap_nm[len] = 0;
 		if (get_cap_mask(cap_nm, mask)) {
 			logger(-1, 0, "Capability %s is unknown", cap_nm);
@@ -928,8 +943,8 @@ static int store_fs(vps_param *old_p, vps_param *vps_p, vps_config *conf,
 	case PARAM_PRIVATE:
 		ret = conf_store_str(conf_h, conf->name, fs->private_orig);
 		break;
-	case PARAM_NOATIME:
-		ret = conf_store_yesno(conf_h, conf->name, fs->noatime);
+	case PARAM_MOUNT_OPTS:
+		ret = conf_store_str(conf_h, conf->name, fs->mount_opts);
 		break;
 	}
 	return ret;
@@ -959,7 +974,7 @@ static int parse_dq(unsigned long **param, const char *val, int sfx)
 	tmp = malloc(sizeof(unsigned long) * 2);
 	if (tmp == NULL)
 		return ERR_NOMEM;
-	ret = parse_twoul_sfx(val, tmp, sfx ? 1024 : 0);
+	ret = parse_twoul_sfx(val, tmp, sfx ? 1024 : 0, 0);
 	if (ret && ret != ERR_LONG_TRUNC) {
 		free(tmp);
 		return ret;
@@ -1351,6 +1366,12 @@ static int store_misc(vps_param *old_p, vps_param *vps_p, vps_config *conf,
 		ret = conf_store_strlist(conf_h, conf->name,
 			&misc->searchdomain, 0);
 		break;
+	case PARAM_LOCAL_UID:
+		ret = conf_store_ulong(conf_h, conf->name, misc->local_uid);
+		break;
+	case PARAM_LOCAL_GID:
+		ret = conf_store_ulong(conf_h, conf->name, misc->local_gid);
+		break;
 	}
 	return ret;
 }
@@ -1621,14 +1642,6 @@ static int store_netif(vps_param *old_p, vps_param *vps_p, vps_config *conf,
 	veth_param *veth_add = &vps_p->res.veth;
 	veth_param *veth_del = &vps_p->del_res.veth;
 
-
-#define STR2MAC(dev)			\
-	((unsigned char *)dev)[0],	\
-	((unsigned char *)dev)[1],	\
-	((unsigned char *)dev)[2],	\
-	((unsigned char *)dev)[3],	\
-	((unsigned char *)dev)[4],	\
-	((unsigned char *)dev)[5]
 	if (conf->id != PARAM_NETIF_ADD)
 		return 0;
 	if (list_empty(&veth_add->dev) && list_empty(&veth_del->dev) &&
@@ -1671,8 +1684,8 @@ static int store_netif(vps_param *old_p, vps_param *vps_p, vps_config *conf,
 		}
 		if (dev->addrlen_ve != 0) {
 			sp += snprintf(sp, ep - sp,
-				"mac=%02X:%02X:%02X:%02X:%02X:%02X,",
-				STR2MAC(dev->dev_addr_ve));
+				"mac=" MAC2STR_FMT ",",
+				MAC2STR(dev->dev_addr_ve));
 			if (sp >= ep)
 				break;
 		}
@@ -1684,8 +1697,8 @@ static int store_netif(vps_param *old_p, vps_param *vps_p, vps_config *conf,
 		}
 		if (dev->addrlen != 0) {
 			sp += snprintf(sp, ep - sp,
-				"host_mac=%02X:%02X:%02X:%02X:%02X:%02X,",
-				STR2MAC(dev->dev_addr));
+				"host_mac=" MAC2STR_FMT ",",
+				MAC2STR(dev->dev_addr));
 			if (sp >= ep)
 				break;
 		}
@@ -1703,8 +1716,8 @@ static int store_netif(vps_param *old_p, vps_param *vps_p, vps_config *conf,
 	free_veth_param(&merged);
 	strcat(buf, "\"");
 	add_str_param(conf_h, buf);
+
 	return 0;
-#undef STR2MAC
 }
 
 static int parse_netif_str_cmd(envid_t veid, const char *str, veth_dev *dev)
@@ -1723,7 +1736,7 @@ static int parse_netif_str_cmd(envid_t veid, const char *str, veth_dev *dev)
 		len = ch - str;
 		ch++;
 	}
-	if (len > IFNAMSIZE)
+	if (len + 1 > IFNAMSIZE)
 		return ERR_INVAL;
 	snprintf(dev->dev_name_ve, len + 1, "%s", str);
 	tmp = ch;
@@ -1778,7 +1791,7 @@ static int parse_netif_str_cmd(envid_t veid, const char *str, veth_dev *dev)
 		ch++;
 	}
 	if (len) {
-		if (len > IFNAMSIZE)
+		if (len + 1 > IFNAMSIZE)
 			return ERR_INVAL;
 		snprintf(dev->dev_name, len + 1, "%s", tmp);
 		if (ch == ep) {
@@ -1824,7 +1837,7 @@ static int parse_netif_str_cmd(envid_t veid, const char *str, veth_dev *dev)
 	/* Parsing bridge name */
 	len = strlen (ch);
 
-	if (len > IFNAMSIZE)
+	if (len + 1 > IFNAMSIZE)
 		return ERR_INVAL;
 
 	snprintf(dev->dev_bridge, len + 1, "%s", ch);
@@ -1984,6 +1997,13 @@ static int parse(envid_t veid, vps_param *vps_p, char *val, int id)
 	case PARAM_IPTABLES:
 		ret = parse_iptables(&vps_p->res.env, val);
 		break;
+
+	case PARAM_LOCAL_UID:
+		conf_parse_ulong(&vps_p->res.misc.local_uid, val);
+		break;
+	case PARAM_LOCAL_GID:
+		conf_parse_ulong(&vps_p->res.misc.local_gid, val);
+		break;
 	case PARAM_LOCKEDPAGES:
 	case PARAM_PRIVVMPAGES:
 	case PARAM_SHMPAGES:
@@ -2047,9 +2067,6 @@ static int parse(envid_t veid, vps_param *vps_p, char *val, int id)
 		break;
 	case PARAM_TEMPLATE:
 		ret = conf_parse_str(&vps_p->res.fs.tmpl, val);
-		break;
-	case PARAM_NOATIME:
-		ret = conf_parse_yesno(&vps_p->res.fs.noatime, val);
 		break;
 	case PARAM_VE_LAYOUT:
 		ret = parse_ve_layout(&vps_p->opt.layout,
@@ -2184,7 +2201,7 @@ static int parse(envid_t veid, vps_param *vps_p, char *val, int id)
 		ret = conf_parse_ulong(&vps_p->res.misc.bootorder, val);
 		break;
 	case PARAM_SNAPSHOT_GUID:
-		ret = conf_parse_str(&vps_p->snap.guid, val);
+		ret = conf_parse_guid(&vps_p->snap.guid, val);
 		break;
 	case PARAM_SNAPSHOT_NAME:
 		ret = conf_parse_str(&vps_p->snap.name, val);
@@ -2194,6 +2211,15 @@ static int parse(envid_t veid, vps_param *vps_p, char *val, int id)
 		break;
 	case PARAM_SNAPSHOT_SKIP_SUSPEND:
 		vps_p->snap.flags |= SNAPSHOT_SKIP_SUSPEND;
+		break;
+	case PARAM_SNAPSHOT_SKIP_CONFIG:
+		vps_p->snap.flags |= SNAPSHOT_SKIP_CONFIG;
+		break;
+	case PARAM_SNAPSHOT_MOUNT_TARGET:
+		ret = conf_parse_str(&vps_p->snap.target, val);
+		break;
+	case PARAM_MOUNT_OPTS:
+		ret = conf_parse_str(&vps_p->res.fs.mount_opts, val);
 		break;
 	case PARAM_IGNORED:
 		/* Well known but ignored parameter */
@@ -2252,7 +2278,7 @@ int vps_parse_config(envid_t veid, char *path, vps_param *vps_p,
 
 	if ((fp = fopen(path, "r")) == NULL) {
 		logger(-1, errno, "Unable to open %s", path);
-		return 1;
+		return VZ_SYSTEM_ERROR;
 	}
 	if (!stat(path, &st))
 		len = st.st_size;
@@ -2329,6 +2355,36 @@ int vps_parse_config(envid_t veid, char *path, vps_param *vps_p,
 	return err;
 }
 
+vps_param *reread_vps_config(envid_t veid)
+{
+	vps_param *gparam = NULL;
+	vps_param *vps_p = NULL;
+	char fname[PATH_MAX];
+
+	get_vps_conf_path(veid, fname, sizeof(fname));
+	if (stat_file(fname) != 1)
+		goto err;
+
+	gparam = init_vps_param();
+	if (vps_parse_config(veid, GLOBAL_CFG, gparam, NULL))
+		goto err;
+
+	vps_p = init_vps_param();
+	if (vps_parse_config(veid, fname, vps_p, NULL))
+		goto err;
+
+	merge_vps_param(gparam, vps_p);
+	free_vps_param(vps_p);
+
+	return gparam;
+
+err:
+	free_vps_param(gparam);
+	free_vps_param(vps_p);
+
+	return NULL;
+}
+
 /********************************************************/
 /*	CT save config stuff				*/
 /********************************************************/
@@ -2337,7 +2393,7 @@ static int read_conf(char *fname, list_head_t *conf_h)
 	FILE *fp;
 	char str[16384];
 
-	if (!stat_file(fname))
+	if (stat_file(fname) != 1)
 		return 0;
 	if (!(fp = fopen(fname, "r")))
 		return -1;
@@ -2443,9 +2499,10 @@ int vps_save_config(envid_t veid, char *path, vps_param *new_p,
 
 	list_head_init(&conf);
 	list_head_init(&new_conf);
-	if (old_p == NULL && stat_file(path)) {
+	if (old_p == NULL) {
 		tmp_old_p = init_vps_param();
-		vps_parse_config(veid, path, tmp_old_p, action);
+		if (stat_file(path) == 1)
+			vps_parse_config(veid, path, tmp_old_p, action);
 		old_p = tmp_old_p;
 	}
 	if (read_conf(path, &conf) != 0)
@@ -2629,6 +2686,7 @@ static void free_fs(fs_param *fs)
 	FREE_P(fs->private)
 	FREE_P(fs->private_orig)
 	FREE_P(fs->tmpl)
+	FREE_P(fs->mount_opts)
 }
 
 static void free_tmpl(tmpl_param *tmpl)
@@ -2651,6 +2709,8 @@ static void free_misc(misc_param *misc)
 	FREE_P(misc->hostname)
 	FREE_P(misc->description)
 	FREE_P(misc->bootorder)
+	FREE_P(misc->local_uid)
+	FREE_P(misc->local_gid)
 }
 
 static void free_net(net_param *net)
@@ -2777,7 +2837,8 @@ static void merge_fs(fs_param *dst, fs_param *src)
 	MERGE_STR(private)
 	MERGE_STR(private_orig)
 	MERGE_STR(tmpl)
-	MERGE_INT(noatime)
+	MERGE_STR(mount_opts)
+	MERGE_INT(flags)
 }
 
 static void merge_tmpl(tmpl_param *dst, tmpl_param *src)
@@ -2818,6 +2879,8 @@ static void merge_misc(misc_param *dst, misc_param *src)
 	MERGE_STR(hostname)
 	MERGE_STR(description)
 	MERGE_INT(onboot)
+	MERGE_P(local_uid)
+	MERGE_P(local_gid)
 	MERGE_P(bootorder)
 	MERGE_INT(wait)
 }

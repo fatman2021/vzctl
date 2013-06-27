@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (C) 2000-2010, Parallels, Inc. All rights reserved.
+# Copyright (C) 2000-2013, Parallels, Inc. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -21,9 +21,9 @@
 
 ACT_SCRIPTS_SFX="start stop mount umount premount postumount"
 # blowfish is a fast block cipher, much faster then 3des
-SSH_OPTIONS="-c blowfish"
+SSH_OPTIONS="-c blowfish -o BatchMode=yes"
 SCP_OPTIONS=$SSH_OPTIONS
-RSYNC_OPTIONS="-aH --delete --numeric-ids"
+RSYNC_OPTIONS="-aHAX --delete --numeric-ids"
 VZCTL=vzctl
 
 online=0
@@ -32,6 +32,9 @@ remove_area=1
 keep_dst=0
 debug=0
 times=0
+compact=0
+snapshot=0
+check_only=0
 confdir="@PKGCONFDIR@/conf"
 vzconf="@PKGCONFDIR@/vz.conf"
 tmpdir="/var/tmp"
@@ -58,6 +61,9 @@ MIG_ERR_RESTORE_VPS=$MIG_ERR_START_VPS
 MIG_ERR_OVZ_NOT_RUNNING=14
 MIG_ERR_APPLY_CONFIG=15
 MIG_ERR_UNSUP_PLOOP=16
+MIG_ERR_UNSUP_CPT_VER=17
+MIG_ERR_UNSUP_CPU=18
+MIG_ERR_CANT_READ_REMOTE_CONFIG=19
 
 # For local vzctl to work, make sure @SBINDIR@ is in $PATH
 if ! echo ":${PATH}:" | fgrep -q ':@SBINDIR@:'; then
@@ -68,7 +74,7 @@ usage() {
 	cat >&2 <<EOF
 This program is used for container migration to another node.
 Usage:
-vzmigrate [-r yes|no] [--ssh=<options>] [--keep-dst] [--online] [-v]
+vzmigrate [-r yes|no] [--ssh=<options>] [--keep-dst] [--live] [-v]
 	destination_address <CTID>
 Options:
 -r, --remove-area yes|no
@@ -84,21 +90,30 @@ Options:
 	error. It makes sense to use this option on big container migration to
 	avoid re-syncing container private area in case some error
 	(on container stop for example) occurs during first migration attempt.
---online
-	Perform online (zero-downtime) migration: during the migration the
-	container freezes for some time and after the migration it
-	keeps working as though nothing has happened.
+-c, --compact
+	Compact a container image before migration. Works for ploop only.
+-s, --snapshot
+	Create a container snapshot before migration. Works for ploop only.
+--live
+	Perform live migration: instead of restarting a container, checkpoint
+	and restore are used, so there is no container downtime or service
+	interruption. Additional steps are performed to minimize the time
+	when a container is in suspended state.
+--check-only, --dry-run
+	Do not perform actual migration, stop after preliminary checks.
+	This is used to check if a CT can possibly be migrated. Combine
+	with --live to enable more checks for live migration case.
 -v
 	Verbose mode. Causes vzmigrate to print debugging messages about
 	its progress (including some time statistics). Multiple -v options
 	increase the verbosity. The maximum is 4.
 -t, --times
-	At the end of online migration, output various timings for migration stages
-	that affect total suspended CT time.
+	At the end of live migration, output various timings for migration
+	stages that affect total suspended CT time.
 
 Examples:
 	Online migration of CT #101 to foo.com:
-		vzmigrate --online foo.com 101
+		vzmigrate --live foo.com 101
 	Migration of CT #102 to foo.com with downtime:
 		vzmigrate foo.com 102
 Notes:
@@ -156,13 +171,13 @@ undo_act_scripts () {
 
 undo_private () {
 	if [ $keep_dst -eq 0 ]; then
-		$SSH "root@$host" "rm -rf $VE_PRIVATE"
+		$SSH "root@$host" "rm -rf $VE_PRIVATE_REMOTE"
 	fi
 	undo_act_scripts
 }
 
 undo_root () {
-	$SSH "root@$host" "rm -rf $VE_ROOT"
+	$SSH "root@$host" "rm -rf $VE_ROOT_REMOTE"
 	undo_private
 }
 
@@ -241,13 +256,15 @@ get_time () {
 }
 
 get_ploop_info() {
-	local dev top img
+	local dev top img root private
 
-	dev=$(awk '$2=="'$VE_ROOT'" {print $1}' /proc/mounts | \
+	root=$(readlink -f "$VE_ROOT")
+	private=$(readlink -f "$VE_PRIVATE")
+	dev=$(awk '$2=="'$root'" {print $1}' /proc/mounts | \
 		sed -e 's|^/dev/||' -e 's|p1$||') || return 1
 	top=$(cat /sys/block/${dev}/pstate/top) || return 1
 	img=$(cat /sys/block/${dev}/pdelta/${top}/image) || return 1
-	TOP_DELTA=$(echo $img | sed "s|^${VE_PRIVATE}/||") || return 1
+	TOP_DELTA=$(echo $img | sed "s|^${private}/||") || return 1
 	PLOOP_DEV="${dev}"
 }
 
@@ -264,7 +281,7 @@ ploop_copy() {
 
 	cat=cat
 	# Use nice progress bar with pv if we can
-	if pv -V >/dev/null 2>&1; then
+	if test $verbose -gt 0 && pv -V >/dev/null 2>&1; then
 		size=$(du -b $delta | awk '{print $1}')
 		test -n "$size" && cat="pv -s $size"
 	fi
@@ -299,13 +316,39 @@ print_times() {
 	echo
 }
 
+check_cpt_props() {
+	local version caps
+
+	log 2 "Checking for CPT version compatibility"
+	version=$(vzcptcheck version)
+	if [ $? -ne 0 -o "$version" = "" ]; then
+		log 1 "Warning: can't get local CPT version, skipping check"
+	elif ! logexec 1 $SSH root@$host vzcptcheck version $version; then
+		log 0 "Error: CPT version check failed on destination node!"
+		log 0 "Destination node kernel is too old, please upgrade"
+		log 0 "Can't continue live migration"
+		exit $MIG_ERR_UNSUP_CPT_VER
+	fi
+
+	log 2 "Checking for CPU flags compatibility"
+	caps=$($SSH root@$host vzcptcheck caps)
+	if [ $? -ne 0 -o "$caps" = "" ]; then
+		log 1 "Warning: can't get remote CPU caps, skipping check"
+	elif ! logexec 1 vzcptcheck caps $VEID $caps; then
+		log 0 "Error: CPU capabilities check failed!"
+		log 0 "Destination node CPU is not compatible"
+		log 0 "Can't continue live migration"
+		exit $MIG_ERR_UNSUP_CPU
+	fi
+}
+
 if [ $# -lt 2 ]; then
 	usage
 fi
 
 while [ ! -z "$1" ]; do
 	case "$1" in
-	--online)
+	--live|--online)
 		online=1
 		;;
 	-v)
@@ -332,6 +375,15 @@ while [ ! -z "$1" ]; do
 		;;
 	--keep-dst)
 		keep_dst=1
+		;;
+	-c|--compact)
+		compact=1
+		;;
+	-s|--snapshot)
+		snapshot=1
+		;;
+	--check-only|--dry-run)
+		check_only=1
 		;;
 	--ssh=*)
 		SSH_OPTIONS="$SSH_OPTIONS $(echo $1 | cut -c7-)"
@@ -405,37 +457,38 @@ if [ "$exist" = "deleted" ]; then
 	exit $MIG_ERR_NOEXIST
 fi
 
-if [ $online -eq 1 ]; then
-	log 1 "Starting online migration of CT $VEID to $host"
-else
-	log 1 "Starting migration of CT $VEID to $host"
-fi
+S="Starting"
+M="migration"
+[ $check_only -eq 1 ] && S="Checking"
+[ $online -eq 1 ] && M="live migration"
+log 1 "$S $M of CT $VEID to $host"
+unset S M
 
 # Try to connect to destination
-if ! logexec 2 $SSH -o BatchMode=yes root@$host /bin/true; then
+if ! logexec 2 $SSH root@$host /bin/true; then
 	log 0 "Can't connect to destination address using public key"
 	log 0 "Please put your public key to destination node"
 	exit $MIG_ERR_CANT_CONNECT
 fi
 
 # Check if OpenVZ is running
-if ! logexec 2 $SSH -o BatchMode=yes root@$host /etc/init.d/vz status ; then
+if ! logexec 2 $SSH root@$host /etc/init.d/vz status ; then
 	log 0 "OpenVZ is not running on the target machine"
 	log 0 "Can't continue migration"
 	exit $MIG_ERR_OVZ_NOT_RUNNING
 fi
 
-# Check if CPT modules are loaded for online migration
+# Check if CPT modules are loaded for live migration
 if [ $online -eq 1 ]; then
 	if [ ! -f /proc/cpt ]; then
 		log 0 "vzcpt module is not loaded on the source node"
-		log 0 "Can't continue online migration"
+		log 0 "Can't continue live migration"
 		exit $MIG_ERR_OVZ_NOT_RUNNING
 	fi
-	if ! logexec 2 $SSH -o BatchMode=yes root@$host "test -f /proc/rst";
+	if ! logexec 2 $SSH root@$host "test -f /proc/rst";
 	then
 		log 0 "vzrst module is not loaded on the destination node"
-		log 0 "Can't continue online migration"
+		log 0 "Can't continue live migration"
 		exit $MIG_ERR_OVZ_NOT_RUNNING
 	fi
 fi
@@ -447,8 +500,27 @@ if [ "$dst_exist" = "exist" ]; then
 fi
 
 if [ $online -eq 1 -a "$state" != "running" ]; then
-	log 0 "Can't perform online migration of a stopped container"
+	log 0 "Can't perform live migration of a stopped container"
 	exit $MIG_ERR_VPS_IS_STOPPED
+fi
+
+if [ $online -eq 1 ]; then
+	if ! which vzcptcheck >/dev/null; then
+		log 1 "Warning: no vzcptcheck binary on local node,"
+		log 1 "skipping CPT version and CPU caps checks"
+	elif ! logexec 1 $SSH root@$host which vzcptcheck >/dev/null; then
+		log 1 "Warning: no vzcptcheck binary on destination node,"
+		log 1 "skipping CPT version and CPU caps checks"
+	else
+		check_cpt_props
+	fi
+	# Check ipv6 kernel module
+	if test -d /sys/module/ipv6; then
+		if ! $SSH "root@$host" test -d /sys/module/ipv6; then
+			log 0 "Module ipv6 is not loaded on the destination node"
+			exit $MIG_ERR_OVZ_NOT_RUNNING
+		fi
+	fi
 fi
 
 log 2 "Loading $vzconf and $vpsconf files"
@@ -458,6 +530,22 @@ log 2 "Loading $vzconf and $vpsconf files"
 VE_DUMPFILE="$tmpdir/dump.$VEID"
 VE_QUOTADUMP="$tmpdir/quotadump.$VEID"
 
+log 2 "Getting remote VE_ROOT and VE_PRIVATE"
+eval $($SSH root@$host "sh -c 'VEID='$VEID'; source /etc/vz/vz.conf && echo VE_ROOT_REMOTE=\$VE_ROOT && echo VE_PRIVATE_REMOTE=\$VE_PRIVATE'")
+if [ -z "$VE_ROOT_REMOTE" -o -z "$VE_PRIVATE_REMOTE" ]; then
+        log 0 "Failed to get remote VE_ROOT/VE_PRIVATE"
+        exit $MIG_ERR_CANT_READ_REMOTE_CONFIG
+fi
+
+if [ $VE_PRIVATE != $VE_PRIVATE_REMOTE ]; then
+        log 1 "Remote VE_PRIVATE path differs from local $VEID.conf"
+        log 1 "Using $VE_PRIVATE_REMOTE for syncing"
+fi
+if [ $VE_ROOT != $VE_ROOT_REMOTE ]; then
+        log 1 "Remote VE_ROOT path differs from local $VEID.conf"
+        log 1 "Using $VE_ROOT_REMOTE for syncing"
+fi
+
 DDXML=$VE_PRIVATE/root.hdd/DiskDescriptor.xml
 if [ -f $DDXML ]; then
 	PLOOP=yes
@@ -466,21 +554,45 @@ if [ -f $DDXML ]; then
 fi
 
 if [ "$PLOOP" = "yes" ]; then
-	log 2 "Check if ploop is supported on destination node"
+	log 2 "Checking if ploop is supported on destination node"
 	if ! logexec 2 $SSH "root@$host" ploop getdev ; then
-		log 0 "Destination node don't support ploop, can't migrate"
+		log 0 "Destination node does not support ploop, can't migrate"
 		exit $MIG_ERR_UNSUP_PLOOP
+	fi
+
+	if [ "$state" = "running" ]; then
+		# Online ploop migration: exclude top delta
+		if ! get_ploop_info; then
+			log 0 "Can't get ploop information"
+			exit $MIG_ERR_COPY
+		fi
+		RSYNC1_OPTIONS="--exclude $TOP_DELTA --delete-excluded"
+	fi
+else
+	# non-ploop case: can use sparse rsync, can't do compact/snapshot
+	RSYNC1_OPTIONS="--sparse"
+	compact=0
+	snapshot=0
+fi
+
+# Check that IP_ADDRESSes are not in use on dest
+# remove extra spaces and netmasks
+IP_X=$(echo $IP_ADDRESS " " | sed 's@/[0-9][0-9]*[[:space:]]@ @g')
+# Only do the check if we have IP(s)
+if echo $IP_X | grep -q '[0-9a-f]'; then
+	log 2 "Checking IPs on destination node: $IP_X"
+	# remove extra spaces, replace spaces with |
+	IP_X=$(echo $IP_X | sed 's/ /|/g')
+	# do check
+	if [ $($SSH "root@$host" "grep -cwE \"$IP_X\" /proc/vz/veip") -gt 0 ]; then
+		log 0 "IP address(es) already in use on destination node"
+		exit $MIG_ERR_IP_IN_USE
 	fi
 fi
 
-log 2 "Check IPs on destination node: $IP_ADDRESS"
-for IP in $IP_ADDRESS; do
-	if [ $($SSH "root@$host" "grep -c \" $IP \" /proc/vz/veip") -gt 0 ];
-	then
-		log 0 "IP address $IP already in use on destination node"
-		exit $MIG_ERR_IP_IN_USE
-	fi
-done
+if [ $check_only -eq 1 ]; then
+	exit 0
+fi
 
 log 1 "Preparing remote node"
 
@@ -490,9 +602,12 @@ if ! logexec 2 $SCP $vpsconf root@$host:$vpsconf ; then
 	exit $MIG_ERR_COPY
 fi
 
+logexec 2 $SSH root@$host $VZCTL set $VEID --private $VE_PRIVATE_REMOTE --root $VE_ROOT_REMOTE --save
+
 logexec 2 $SSH root@$host $VZCTL set $VEID --applyconfig_map name --save
+RET=$?
 # vzctl return code 20 or 21 in case of unrecognized option
-if [ $? != 20 ] && [ $? != 21 ] && [ $? != 0 ]; then
+if [ $RET != 20 ] && [ $RET != 21 ] && [ $RET != 0 ]; then
 	log 0 "Failed to apply config on destination node"
 	undo_conf
 	exit $MIG_ERR_APPLY_CONFIG
@@ -514,28 +629,17 @@ if [ -n "$act_scripts" ]; then
 fi
 
 log 2 "Creating remote container root dir"
-if ! $SSH "root@$host" "mkdir -p $VE_ROOT"; then
+if ! $SSH "root@$host" "mkdir -p $VE_ROOT_REMOTE"; then
 	log 0 "Failed to make container root directory"
 	undo_act_scripts
 	exit $MIG_ERR_COPY
 fi
 
 log 2 "Creating remote container private dir"
-if ! $SSH "root@$host" "mkdir -p $VE_PRIVATE"; then
+if ! $SSH "root@$host" "mkdir -p $VE_PRIVATE_REMOTE"; then
 	log 0 "Failed to make container private area directory"
 	undo_private
 	exit $MIG_ERR_COPY
-fi
-
-if [ "$PLOOP" != "yes" ]; then
-	RSYNC1_OPTIONS="--sparse"
-else
-	if ! get_ploop_info; then
-		log 0 "Can't get ploop information"
-		undo_private
-		exit $MIG_ERR_COPY
-	fi
-	RSYNC1_OPTIONS="--exclude $TOP_DELTA --delete-excluded"
 fi
 
 if [ "${DISK_QUOTA}" != "no" ]; then
@@ -556,10 +660,27 @@ if [ "${DISK_QUOTA}" != "no" ]; then
 	fi
 fi
 
+if [ "$compact" -eq 1 ]; then
+	log 1 "Compacting container image"
+	if ! logexec 2 vzctl compact $VEID ; then
+		log 0 "Failed to compact container image"
+		undo_root
+	fi
+fi
+
+if [ "$snapshot" -eq 1 ]; then
+	log 1 "Creating a container snapshot"
+	if ! logexec 2 $VZCTL snapshot $VEID ; then
+		log 0 "Failed to snapshot a container"
+		undo_root
+	fi
+fi
+
 log 1 "Syncing private"
-$RSYNC $RSYNC1_OPTIONS "$VE_PRIVATE" "root@$host:${VE_PRIVATE%/*}"
+$RSYNC $RSYNC1_OPTIONS "$VE_PRIVATE" "root@$host:${VE_PRIVATE_REMOTE%/*}"
+RET=$?
 # Ignore rsync error 24 "Partial transfer due to vanished source files"
-if [ $? != 24 ] && [ $? != 0 ]; then
+if [ $RET != 24 ] && [ $RET != 0 ]; then
 	log 0 "Failed to sync container private areas"
 	undo_quota_on
 	exit $MIG_ERR_COPY
@@ -643,7 +764,7 @@ fi
 time_rsync2=$(date +%s.%N)
 if [ "$state" = "running" -a "$PLOOP" != "yes" ]; then
 	log 2 "Syncing private (2nd pass)"
-	if ! $RSYNC "$VE_PRIVATE" "root@$host:${VE_PRIVATE%/*}"; then
+	if ! $RSYNC "$VE_PRIVATE" "root@$host:${VE_PRIVATE_REMOTE%/*}"; then
 		log 0 "Failed to sync container private areas"
 		undo_source_stage
 		exit $MIG_ERR_COPY
@@ -655,7 +776,7 @@ if [ "${DISK_QUOTA}" != "no" ]; then
 	log 1 "Syncing 2nd level quota"
 
 	log 2 "Dumping 2nd level quota"
-	if ! vzdqdump $VEID -U -G -T > "$VE_QUOTADUMP"; then
+	if ! vzdqdump $VEID -U -G -T -F > "$VE_QUOTADUMP"; then
 		log 0 "Failed to dump 2nd level quota"
 		undo_quota_dump
 		exit $MIG_ERR_QUOTA
@@ -668,8 +789,8 @@ if [ "${DISK_QUOTA}" != "no" ]; then
 		exit $MIG_ERR_COPY
 	fi
 
-	log 2 "Load 2nd level quota"
-	if ! $SSH "root@$host" "(vzdqload $VEID -U -G -T < $VE_QUOTADUMP &&
+	log 2 "Loading 2nd level quota"
+	if ! $SSH "root@$host" "(vzdqload $VEID -U -G -T -F < $VE_QUOTADUMP &&
 			vzquota reload2 $VEID)"; then
 		log 0 "Failed to load 2nd level quota"
 		undo_copy_quota
@@ -695,7 +816,7 @@ if [ $online -eq 1 ]; then
 	fi
 	time_finish=$(date +%s.%N)
 	print_times
-	log 1 "Cleanup"
+	log 1 "Cleaning up"
 
 	log 2 "Killing container"
 	logexec 2 $VZCTL chkpnt $VEID --kill
@@ -728,7 +849,7 @@ else
 		fi
 	fi
 
-	log 1 "Cleanup"
+	log 1 "Cleaning up"
 fi
 
 if [ $remove_area -eq 1 ]; then

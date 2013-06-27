@@ -47,7 +47,7 @@ static int getlockpid(char *file)
 
 	if ((fd = open(file, O_RDONLY)) == -1)
 		return -1;
-	if ((len = read(fd, buf, sizeof(buf))) >= 0) {
+	if ((len = read(fd, buf, sizeof(buf) - 1)) >= 0) {
 		buf[len] = 0;
 		if (sscanf(buf, "%d", &pid) != 1) {
 			logger(1, 0, "Incorrect pid: %s in %s", buf, file);
@@ -57,6 +57,29 @@ static int getlockpid(char *file)
 	close(fd);
 
 	return pid;
+}
+
+static void show_locker(int pid)
+{
+	int fd;
+	char fname[STR_SIZE];
+	char buf[STR_SIZE] = "";
+	int i, len = 0;
+
+	snprintf(fname, sizeof(fname), "/proc/%d/cmdline", pid);
+	if ((fd = open(fname, O_RDONLY)) != -1) {
+		len = read(fd, buf, sizeof(buf) - 1);
+		if (len < 0) /* ignore error, assume empty string */
+			len = 0;
+		buf[len] = '\0';
+		close(fd);
+	}
+	/* Replace \0 separators with spaces, except for last one */
+	for (i = 0; i < len - 1; i++)
+		if (buf[i] == '\0')
+			buf[i] = ' ';
+
+	logger(-1, 0, "Locked by: pid %d, cmdline %s", pid, buf);
 }
 
 /** Lock container.
@@ -80,7 +103,7 @@ int vps_lock(envid_t veid, char *dir, char *status)
 
 	if (check_var(dir, "lockdir is not set"))
 		return -1;
-	if (!stat_file(dir))
+	if (stat_file(dir) != 1)
 		if (make_dir(dir, 1))
 			return -1;
 	/* Create temp lock file */
@@ -119,6 +142,7 @@ int vps_lock(envid_t veid, char *dir, char *status)
 			snprintf(buf, sizeof(buf), "/proc/%d", pid);
 			if (!stat(buf, &st)) {
 				ret = 1;
+				show_locker(pid);
 				break;
 			} else {
 				logger(0, 0, "Removing stale lock"

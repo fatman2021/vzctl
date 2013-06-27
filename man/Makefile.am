@@ -25,6 +25,8 @@ man_MANS = \
  vzsplit.8 \
  vzubc.8 \
  vzmigrate.8 \
+ vzcptcheck.8 \
+ vztmpl-dl.8 \
  arpsend.8 \
  ndsend.8 \
  vzpid.8 \
@@ -47,16 +49,16 @@ GROFF_HTML_OPTS=-Thtml -t -man -msafer
 EXTRA_DIST = $(SRCS) toc.man.in toc.sh html2wiki.sh macros.tmac
 
 %: %.in macros.tmac
-	cat macros.tmac $< > $@
+	cat $(srcdir)/macros.tmac $< > $@
 
 check-man-dates:
-	for FILE in $(man_MANS); do \
+	for FILE in $(SRCS); do \
 		DATE="$$(LANG=C git log -1 --format='format:%cD' \
 			$${FILE} | awk '{print $$2, $$3, $$4}')" && \
 		echo $$FILE: $$DATE && \
-		sed -e "1s%\(\.TH \w\w* [0-9] \"\)[0-9]* \w\w* [0-9][0-9][0-9][0-9]%\1$${DATE}%" -i $${FILE}; \
+		sed -e "1,20s%\(^\.TH \w[a-z.]* [0-9] \"\)[0-9]* \w\w* [0-9][0-9][0-9][0-9]%\1$${DATE}%" -i $${FILE}; \
 	done
-	git diff $(man_MANS)
+	git diff $(SRCS)
 .PHONY: check-man-dates
 
 %.5.ps:	%.5

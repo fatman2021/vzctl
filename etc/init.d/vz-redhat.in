@@ -19,7 +19,7 @@
 # OpenVZ startup script, used for redhat and debian related distributions.
 
 ###
-# chkconfig: 2345 96 88
+# chkconfig: 2345 96 20
 # description: OpenVZ startup script.
 ###
 
@@ -38,10 +38,11 @@
 
 # This line is needed to cheat /etc/init.d/rc who expects action word
 
-. @VZLIBDIR@/initd-functions
+. @SCRIPTDIR@/initd-functions
 
 VZQUOTA=@SBINDIR@/vzquota
 CONFIG_DIR=@PKGCONFDIR@/conf
+VZREBOOTDIR=@VZREBOOTDIR@
 LOCKFILE=$VARLOCK/vz_lock
 SUBSYS_VZ=$VARLOCK/vz
 VESTAT=/proc/vz/vestat
@@ -180,6 +181,27 @@ modify_vzconf()
 	fi
 }
 
+# Add /vz to PRUNEPATHS in /etc/updatedb.conf so updatedb won't:
+# 1 clog its database with lots of file entries
+# 2 interfere with vzctl umount
+fix_updatedb() {
+	local file="/etc/updatedb.conf"
+	local var="PRUNEPATHS"
+	local add
+
+	test -r $file || return
+	add=$(printf "$VE_ROOT\n$VE_PRIVATE" | \
+		sed -e 'N;s/^\(.*\).*\n\1.*$/\1/' -e 's@/[^/]*$@@')
+	test "$add" = "/" && return
+	test -d "$add" || return
+	grep -qw "^${var}" $file || return
+	grep -qE "^${var}.* ${add}[\" ]" $file && return
+	__echo "Adding ${add} to ${var} in ${file}:"
+	sed -i.rpmsave \
+		"s@\(^${var}[^\"]*\"[^\"]*\)\(\".*\)\$@\1 ${add}\2@" $file
+	print_result
+}
+
 status()
 {
 	check_vzkernel
@@ -270,8 +292,17 @@ start_ves()
 	local need_restart
 
 	need_restart=""
-	velist=$(vzlist -aH -octid,onboot -s-bootorder |
-		awk '$2 == "yes" {print $1}')
+	# CTs that were running before a reboot
+	velist=$(ls $VZREBOOTDIR)
+	rm -f $VZREBOOTDIR/*
+	# ... and not have ONBOOT=no
+	test -n "$velist" && velist=$(vzlist -aH -octid,onboot $velist |
+			awk '$2 != "no" {print $1}')
+	# ... plus ones with ONBOOT=yes
+	velist=$(echo "$velist"; vzlist -aH -octid,onboot |
+			awk '$2 == "yes" {print $1}')
+	# Then sort by bootorder
+	test -n "$velist" && velist=$(vzlist -aH -octid -s-bootorder $velist)
 	sysctl -q -w net.ipv4.route.src_check=0
 	for veid in $velist; do
 		[ "${veid}" = "0" ] && continue
@@ -286,6 +317,7 @@ start_ves()
 				fi
 			fi
 		fi
+		rm -f $VZREBOOTDIR/$veid
 		msg=`$VZCTL start ${veid} 2>&1`
 		print_result "$msg"
 	done
@@ -301,28 +333,47 @@ start_ves()
 
 stop_ves()
 {
-	local veid
-	local velist
-	local msg
-	local m
-	local mounts
-	local fail
-	local iter
-	local quota
-	local pids
+	local veid velist i iter pid pids msg stage stages
 
-	if get_veinfo; then
-		get_parallel
+	if ! get_veinfo; then
+		return
+	fi
+
+	# Pre-stop stage
+	rm -f $VZREBOOTDIR/*
+	velist=$(vzlist -1 2>/dev/null)
+	for veid in $velist; do
+		# Equalize cpuunits for all CTs
+		$VZCTL set $veid --cpuunits 2000 --cpulimit 0 >/dev/null 2>&1
+		# Save to vzreboot list
+		touch $VZREBOOTDIR/$veid
+	done
+
+	get_parallel
+	stages="stop"
+	if [ -z "${VE_STOP_MODE}" -o "$VE_STOP_MODE" = "suspend" ]; then
+		stages="suspend stop"
+	fi
+	for stage in $stages; do
+		case $stage in
+			suspend)
+				msg='Suspending CT'
+				;;
+			stop)
+				msg='Shutting down CT'
+				;;
+		esac
 		for i in 0 1 2; do
 			iter=0;
 			pids=
-			velist=`awk '$1 != "VEID" && $1 != "Version:" {print $1}' ${VESTAT}`
+			velist=$(vzlist -H -o ctid -sbootorder 2>/dev/null)
 			for veid in $velist; do
-				echo "Shutting down CT $veid"
-				# Set fairsched parameters to maximum so
-				# CT will stop fast
-				$VZCTL set $veid --cpuunits 2000 --cpulimit 0 >/dev/null 2>&1
-				$VZCTL --skiplock stop $veid >/dev/null 2>&1 &
+				echo $msg $veid
+				if [ "$stage" = "stop" ]; then
+					# Unset cpulimit for CT to stop fast
+					$VZCTL set $veid --cpulimit 0 >/dev/null 2>&1
+				fi
+				$VZCTL --skiplock $stage $veid >/dev/null 2>&1 &
 				pids="$pids $!"
 				iter=$(($iter+1))
 				if [ ${iter} -gt ${PARALLEL} ]; then
@@ -337,9 +388,16 @@ stop_ves()
 				wait $pid
 			done
 		done
-	fi
-	iter=0
-	fail=1
+	done
+}
+
+umount_ves()
+{
+	local iter=0
+	local fail=1
+	local m mounts msg quota
+
+	# umount all simfs mounts
 	while test $iter -lt 5 -a $fail -ne 0; do
 		fail=0
 		mounts=`awk '{if ($3=="simfs") print $2}' /proc/mounts`
@@ -382,6 +440,7 @@ lockfile()
 		return 0;
 	}
 	kill -0 `cat $LOCKFILE` >/dev/null 2>&1 && {
+		trap -- - EXIT
 		return 1;
 	}
 	ln ${TEMPFILE} ${LOCKFILE} >/dev/null 2>&1 && {
@@ -442,10 +501,20 @@ start()
 		fi
 	fi
 
+	if [ -f /proc/vz/oom_score_adj ]; then
+		__echo "Applying OOM adjustments: "
+		cat /etc/vz/oom-groups.conf > /proc/vz/oom_score_adj
+		print_result
+	fi
+
 	start_net
 	setup_ve0
 	modify_vzconf
+	fix_updatedb
 	start_ves
+
+	# Try to run vzstats to report new kernel
+	vzstats >/dev/null 2>&1
 
 	rm -f $LOCKFILE
 	touch $SUBSYS_VZ
@@ -473,6 +542,7 @@ stop()
 	fi
 
 	stop_ves
+	umount_ves
 	umount_cgroups
 	stop_net
 	__echo "Stopping OpenVZ: "

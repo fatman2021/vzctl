@@ -6,9 +6,11 @@
 %define _rootdir %{_vzdir}/root
 %define _cachedir %{_vzdir}/template/cache
 %define _veipdir /var/lib/vzctl/veip
-%define _pkglibdir %_libdir/vzctl
+%define _vzrebootdir /var/lib/vzctl/vzreboot
+%define _vepiddir /var/lib/vzctl/vepid
+%define _pkglibdir %_libexecdir/vzctl
+%define _scriptdir %_pkglibdir/scripts
 %define _configdir %_sysconfdir/vz
-%define _scriptdir /usr/share/vzctl/scripts
 %define _vpsconfdir %_sysconfdir/sysconfig/vz-scripts
 %define _netdir	%_sysconfdir/sysconfig/network-scripts
 %define _logrdir %_sysconfdir/logrotate.d
@@ -21,10 +23,10 @@
 
 Summary: OpenVZ containers control utility
 Name: vzctl
-Version: 3.3
+Version: 4.3.1
 %define rel 1
 Release: %{rel}%{?dist}
-License: GPL
+License: GPLv2+
 Group: System Environment/Kernel
 Source: http://download.openvz.org/utils/%{name}/%{version}/src/%{name}-%{version}.tar.bz2
 ExclusiveOS: Linux
@@ -32,43 +34,40 @@ BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 Requires: vzkernel
 Requires: vzeventmod
 URL: http://openvz.org/
-# these reqs are for vz helper scripts
-Requires: bash
-Requires: gawk
-Requires: sed
-Requires: grep
 Requires: /sbin/chkconfig
-Requires: vzquota >= 2.7.0-4
+Requires: vzquota >= 3.1
 Requires: fileutils
-Requires: vzctl-lib = %{version}-%{release}
+Requires: vzctl-core = %{version}-%{release}
 Requires: tar
-Requires: ploop > 1.2-1
-BuildRequires: ploop-devel > 1.2-1
-
+Requires: vzstats
+Conflicts: ploop-lib < 1.7-1
+BuildRequires: ploop-devel >= 1.7-1
+BuildRequires: libxml2-devel >= 2.6.16
+BuildRequires: libcgroup-devel >= 0.37
 # requires for vzmigrate purposes
 Requires: rsync
 Requires: gawk
 Requires: openssh
-
 # Virtual provides for newer RHEL6 kernel
 Provides: virtual-vzkernel-install = 2.0.0
 
 %description
-This utility allows system administator to control OpenVZ containers,
+This utility allows system administrators to control Linux containers,
 i.e. create, start, shutdown, set various options and limits etc.
 
 %prep
-%setup
+%setup -q
 
 %build
 CFLAGS="$RPM_OPT_FLAGS" %configure \
+	vzdir=%{_vzdir} \
 	--enable-bashcomp \
 	--enable-logrotate \
 	--disable-static
 make %{?_smp_mflags}
 
 %install
-rm -rf $RPM_BUILD_ROOT
+rm -rf %{buildroot}
 make DESTDIR=$RPM_BUILD_ROOT vpsconfdir=%{_vpsconfdir} \
 	install install-redhat-from-spec
 ln -s ../sysconfig/vz-scripts $RPM_BUILD_ROOT/%{_configdir}/conf
@@ -76,88 +75,51 @@ ln -s ../vz/vz.conf $RPM_BUILD_ROOT/etc/sysconfig/vz
 # Needed for %ghost in %files section below
 touch $RPM_BUILD_ROOT/etc/sysconfig/vzeventd
 # This could go to vzctl-lib-devel, but since we don't have it...
-rm -f  $RPM_BUILD_ROOT/%_libdir/libvzctl.{la,so}
+rm -f $RPM_BUILD_ROOT/%_libdir/libvzctl.la
+rm -f $RPM_BUILD_ROOT/%_libdir/libvzctl.so
+rm -f $RPM_BUILD_ROOT/%_libdir/libvzchown.la
+rm -f $RPM_BUILD_ROOT/%_libdir/libvzchown.so.*
 
 %clean
 rm -rf $RPM_BUILD_ROOT
 
 %files
-%defattr(-,root,root)
-%dir %{_pkglibdir}/scripts
-%attr(755,root,root) %{_pkglibdir}/scripts/initd-functions
-%attr(755,root,root) %{_initddir}/vz
-%attr(755,root,root) %{_initddir}/vzeventd
-%dir %attr(755,root,root) %{_lockdir}
-%dir %attr(755,root,root) %{_dumpdir}
-%dir %attr(700,root,root) %{_privdir}
-%dir %attr(700,root,root) %{_rootdir}
-%dir %attr(755,root,root) %{_cachedir}
-%dir %attr(755,root,root) %{_veipdir}
-%dir %attr(755,root,root) %{_configdir}
-%dir %attr(755,root,root) %{_namesdir}
-%dir %attr(755,root,root) %{_vpsconfdir}
-%dir %attr(755,root,root) %{_distconfdir}
-%dir %attr(755,root,root) %{_distscriptdir}
-%dir %attr(755,root,root) %{_vzdir}
-%attr(755,root,root) %{_sbindir}/vzctl
-%attr(755,root,root) %{_sbindir}/vzeventd
-%attr(755,root,root) %{_sbindir}/arpsend
-%attr(755,root,root) %{_sbindir}/ndsend
-%attr(755,root,root) %{_sbindir}/vzsplit
-%attr(755,root,root) %{_sbindir}/vzlist
-%attr(755,root,root) %{_sbindir}/vzmemcheck
-%attr(755,root,root) %{_sbindir}/vzcpucheck
-%attr(755,root,root) %{_sbindir}/vznetcfg
-%attr(755,root,root) %{_sbindir}/vznetaddbr
-%attr(755,root,root) %{_sbindir}/vzcalc
-%attr(755,root,root) %{_sbindir}/vzpid
-%attr(755,root,root) %{_sbindir}/vzcfgvalidate
-%attr(755,root,root) %{_sbindir}/vzmigrate
-%attr(755,root,root) %{_sbindir}/vzifup-post
-%attr(755,root,root) %{_sbindir}/vzubc
-%attr(644,root,root) %{_logrdir}/vzctl
-%attr(644,root,root) %{_distconfdir}/distribution.conf-template
-%attr(644,root,root) %{_distconfdir}/default
-%attr(755,root,root) %{_distscriptdir}/*.sh
-%attr(644,root,root) %{_distscriptdir}/functions
-%attr(755,root,root) %{_netdir}/ifup-venet
-%attr(755,root,root) %{_netdir}/ifdown-venet
-%attr(644,root,root) %{_netdir}/ifcfg-venet0
-%attr(644, root, root) %{_mandir}/man8/vzctl.8.*
-%attr(644, root, root) %{_mandir}/man8/vzeventd.8.*
-%attr(644, root, root) %{_mandir}/man8/vzmigrate.8.*
-%attr(644, root, root) %{_mandir}/man8/arpsend.8.*
-%attr(644, root, root) %{_mandir}/man8/ndsend.8.*
-%attr(644, root, root) %{_mandir}/man8/vzsplit.8.*
-%attr(644, root, root) %{_mandir}/man8/vzcfgvalidate.8.*
-%attr(644, root, root) %{_mandir}/man8/vzmemcheck.8.*
-%attr(644, root, root) %{_mandir}/man8/vzcalc.8.*
-%attr(644, root, root) %{_mandir}/man8/vzpid.8.*
-%attr(644, root, root) %{_mandir}/man8/vzcpucheck.8.*
-%attr(644, root, root) %{_mandir}/man8/vzubc.8.*
-%attr(644, root, root) %{_mandir}/man8/vzlist.8.*
-%attr(644, root, root) %{_mandir}/man8/vzifup-post.8.*
-%attr(644, root, root) %{_mandir}/man5/ctid.conf.5.*
-%attr(644, root, root) %{_mandir}/man5/vz.conf.5.*
-%attr(644, root, root) %{_udevrulesdir}/*
-%attr(644, root, root) %{_bashcdir}/*
-
-%config(noreplace) %{_configdir}/vz.conf
-%config(noreplace) %{_configdir}/osrelease.conf
-%config(noreplace) %{_configdir}/download.conf
-%config(noreplace) %{_distconfdir}/*.conf
-%config %{_vpsconfdir}/ve-basic.conf-sample
-%config %{_vpsconfdir}/ve-light.conf-sample
-%config %{_vpsconfdir}/ve-unlimited.conf-sample
-%config %{_vpsconfdir}/ve-vswap-256m.conf-sample
-%config %{_vpsconfdir}/ve-vswap-512m.conf-sample
-%config %{_vpsconfdir}/ve-vswap-1024m.conf-sample
-%config %{_vpsconfdir}/ve-vswap-1g.conf-sample
-%config %{_vpsconfdir}/ve-vswap-2g.conf-sample
-%config %{_vpsconfdir}/ve-vswap-4g.conf-sample
-%config %{_vpsconfdir}/0.conf
-
-%attr(777, root, root) /etc/vz/conf
+%dir %{_scriptdir}
+%{_scriptdir}/initd-functions
+%{_initddir}/vz
+%{_initddir}/vzeventd
+%{_sbindir}/vzeventd
+%{_sbindir}/vzsplit
+%{_sbindir}/vzlist
+%{_sbindir}/vzmemcheck
+%{_sbindir}/vzcpucheck
+%{_sbindir}/vznetcfg
+%{_sbindir}/vznetaddbr
+%{_sbindir}/vzcalc
+%{_sbindir}/vzcptcheck
+%{_sbindir}/vzpid
+%{_sbindir}/vzcfgvalidate
+%{_sbindir}/vzmigrate
+%{_sbindir}/vzifup-post
+%{_sbindir}/vzubc
+%{_netdir}/ifup-venet
+%{_netdir}/ifdown-venet
+%{_netdir}/ifcfg-venet0
+%{_mandir}/man8/vzeventd.8.*
+%{_mandir}/man8/vzmigrate.8.*
+%{_mandir}/man8/vzcptcheck.8.*
+%{_mandir}/man8/vzsplit.8.*
+%{_mandir}/man8/vzcfgvalidate.8.*
+%{_mandir}/man8/vzmemcheck.8.*
+%{_mandir}/man8/vzcalc.8.*
+%{_mandir}/man8/vzpid.8.*
+%{_mandir}/man8/vzcpucheck.8.*
+%{_mandir}/man8/vztmpl-dl.8.*
+%{_mandir}/man8/vzubc.8.*
+%{_mandir}/man8/vzlist.8.*
+%{_mandir}/man8/vzifup-post.8.*
+%{_udevrulesdir}/*
+%{_bashcdir}/*
 %config /etc/sysconfig/vz
 %ghost %config(missingok) /etc/sysconfig/vzeventd
 
@@ -200,6 +162,10 @@ if %{_initddir}/vz status >/dev/null 2>&1; then
 		%{_initddir}/vzeventd start
 	fi
 fi
+
+# Run post-install script
+%{_scriptdir}/vz-postinstall
+
 exit 0
 
 %preun
@@ -208,30 +174,338 @@ if [ $1 = 0 ]; then
 	/sbin/chkconfig --del vzeventd >/dev/null 2>&1
 fi
 
-%package lib
-Summary: Containers control API library
+%package core
+Summary: OpenVZ containers control utility core
 Group: System Environment/Kernel
 Requires: libxml2
-BuildRequires: libxml2-devel >= 2.6.16
+Obsoletes: vzctl-lib
+# these reqs are for vz helper scripts
+Requires: bash
+Requires: gawk
+Requires: sed
+Requires: grep
+# requires for bash_completion and vztmpl-dl
+Requires: wget
 
-%description lib
-Containers control API library
+%description core
+OpenVZ containers control utility core package
 
-%files lib
-%defattr(-,root,root)
-%attr(755,root,root) %{_libdir}/libvzctl-*.so
+%files core
+%{_libdir}/libvz*.so
+%dir %{_lockdir}
+%dir %{_dumpdir}
+%dir %{_privdir}
+%dir %{_rootdir}
+%dir %{_cachedir}
+%dir %{_veipdir}
+%dir %{_vzrebootdir}
+%dir %{_vepiddir}
+%dir %{_configdir}
+%dir %{_namesdir}
+%dir %{_vpsconfdir}
+%dir %{_distconfdir}
+%dir %{_distscriptdir}
+%dir %{_vzdir}
+%{_sbindir}/vzctl
+%{_sbindir}/arpsend
+%{_sbindir}/ndsend
+%{_sbindir}/vztmpl-dl
+%{_logrdir}/vzctl
+%{_distconfdir}/distribution.conf-template
+%{_distconfdir}/default
+%{_distscriptdir}/*.sh
+%{_distscriptdir}/functions
+%{_mandir}/man8/vzctl.8.*
+%{_mandir}/man8/arpsend.8.*
+%{_mandir}/man8/ndsend.8.*
+%{_mandir}/man5/ctid.conf.5.*
+%{_mandir}/man5/vz.conf.5.*
 %dir %{_pkglibdir}
-%dir %{_pkglibdir}/scripts
-%attr(755,root,root) %{_pkglibdir}/scripts/vps-functions
-%attr(755,root,root) %{_pkglibdir}/scripts/vps-net_add
-%attr(755,root,root) %{_pkglibdir}/scripts/vps-net_del
-%attr(755,root,root) %{_pkglibdir}/scripts/vps-create
-%attr(755,root,root) %{_pkglibdir}/scripts/vps-download
-%attr(755,root,root) %{_pkglibdir}/scripts/vzevent-stop
-%attr(755,root,root) %{_pkglibdir}/scripts/vzevent-reboot
-%attr(755,root,root) %{_pkglibdir}/scripts/vps-pci
+%dir %{_scriptdir}
+%{_scriptdir}/vps-functions
+%{_scriptdir}/vps-net_add
+%{_scriptdir}/vps-net_del
+%{_scriptdir}/vps-netns_dev_add
+%{_scriptdir}/vps-netns_dev_del
+%{_scriptdir}/vps-create
+%{_scriptdir}/vzevent-stop
+%{_scriptdir}/vzevent-reboot
+%{_scriptdir}/vps-pci
+%{_scriptdir}/vps-cpt
+%{_scriptdir}/vps-rst
+%{_scriptdir}/vps-rst-env
+%{_scriptdir}/vz-postinstall
+/etc/vz/conf
+%config(noreplace) %{_configdir}/vz.conf
+%config(noreplace) %{_configdir}/osrelease.conf
+%config(noreplace) %{_configdir}/download.conf
+%config(noreplace) %{_configdir}/oom-groups.conf
+%config(noreplace) %{_distconfdir}/*.conf
+%config %{_vpsconfdir}/ve-basic.conf-sample
+%config %{_vpsconfdir}/ve-light.conf-sample
+%config %{_vpsconfdir}/ve-unlimited.conf-sample
+%config %{_vpsconfdir}/ve-vswap-256m.conf-sample
+%config %{_vpsconfdir}/ve-vswap-512m.conf-sample
+%config %{_vpsconfdir}/ve-vswap-1024m.conf-sample
+%config %{_vpsconfdir}/ve-vswap-1g.conf-sample
+%config %{_vpsconfdir}/ve-vswap-2g.conf-sample
+%config %{_vpsconfdir}/ve-vswap-4g.conf-sample
+%config %{_vpsconfdir}/0.conf
+
+%post core
+/sbin/ldconfig
+
+%postun core
+/sbin/ldconfig
 
 %changelog
+* Mon Jun  3 2013 Kir Kolyshkin <kir@openvz.org> - 4.3.1-1
+- New functionality:
+-- vzctl restore with CRIU: restore veth devices
+- Fixes:
+-- vzmigrate: fix a typo leading to missing `]' warning (harmless)
+-- configure.ac: set _GNU_SOURCE for older autoconf
+-- vzctl stop: don't kill CT right away if halt exited with 1
+-- vzctl restore/start: fix running mount script (#2603)
+-- vps_start_custom(): close old_wait_p fds
+-- stat_file(): print error if other than ENOENT
+-- vzctl snapshot-switch: do apply config saved on snapshot
+-- vzctl snapshot-switch: don't remove dump file
+-- fix checking stat_file() return code
+-- vzctl create: umount ploop device if interrupted
+-- src/snapshot.c: log errno after failed rename
+-- vzctl start/destroy: fix criu dump removal
+-- vzctl restore: synchronize criu with vzctl
+-- vzctl --help: fix copyright years
+- Improvements:
+-- logger(): don't spoil errno
+-- Macro GET_DUMP_FILE is internal, move to .c
+-- is_vzquota_available(): use access() and check for x bit
+-- stat_file(): use access() instead of stat()
+-- vzctl_env_[u]mount_snapshot: rm guid check
+-- vzctl_env_create_snapshot(): explicitly specify guid on rollback
+-- vzctl_env_switch_snapshot(): rework using ploop_switch_snapshot_ex()
+-- vzctl restore: more consistent error printing
+- Documentation:
+-- man: fix pages' dates
+
+* Fri May 24 2013 Kir Kolyshkin <kir@openvz.org> - 4.3-1
+- New functionality:
+-- vzctl enter/exec now works for upstream kernel 3.8+
+-- vzctl snapshot-[u]mount
+-- user namespace support for upstream kernel 3.9+
+-- vzctl suspend/resume: support upstream 3.x kernel via CRIU (http://criu.org)
+-- vzmigrate: add compatibility pre-checks for CPT version and CPU flags
+-- Add vzstats dependency to rpm package
+- Improvements:
+-- vzctl: introduce cleanup handler mechanism, use for ploop, scripts etc.
+-- vzctl start: add pre-start dist script
+-- vzctl start: remove dumpfile on successful start
+-- vzmigrate: add -o BatchMode=yes to SSH_OPTIONS
+-- vzctl console: recognize ESC as a first character
+-- add vzctl itself to OOM group configuration
+-- bash-completion: add vzctl snapshot-list options
+-- bash-completion: add vzctl snapshot-* --id/--uuid argument
+-- vzctl set --reset_ub: make exclusive
+-- vzctl set: on fail don't warn about missing --save
+-- etc/init.d/vz*: try to run vzstats
+-- vzmigrate: add --check-only (aka --dry-run)
+-- Move container private area check after executing premount scripts
+- Fixes:
+-- vzctl snapshot-list -o desc,device: fix width
+-- vzmigrate: fix ploop-based CT migration wrt symlinks
+-- vzmigrate: improve a few log messages
+-- vzmigrate: fix and optimize IP address checks
+-- vzmigrate: fix checking rsync/vzctl exit code
+-- vps_destroy_dir(): don't call quota on ploop CT
+-- suse-add_ip.sh: remove a bogus warning in no IPs case
+-- src/lib/cpt.c:restore_fn(): log errno
+-- Many (about 40) fixes here and there, found by Coverity
+-- destroydir(): log errno
+-- vzctl set 0 ... --force: don't SEGV on non-ovz kernel
+-- vzctl set --force: require --save
+-- vzctl set --diskspace: require --save for ploop
+-- vps-download: fix config file in --config output
+-- vzlist -o vswap: fix
+-- vzctl start: fix ub limits setting for upstream containers
+-- vzctl restore: don't run action scripts
+-- Fix checking vps_is_mounted() return value
+-- Remove more traces of noatime flag
+- Documentation:
+-- vzcptcheck(8): added
+-- vzctl(8): note vzctl set --name requires --save
+-- vzctl(8): improve --setmode description
+-- vzctl(8): fix and improve description of set --userpasswd
+-- vzctl(8): document snapshot-mount, snapshot-umount
+-- vzctl(8): document --local-gid, local-uid
+-- distribution.conf-template: document PRE_START
+-- other fixes and improvements
+
+* Fri Feb 15 2013 Kir Kolyshkin <kir@openvz.org> - 4.2-1
+- New functionality:
+-- Support for Fedora 18 in container (devices, disk quota, venet IPs, caps)
+-- vzctl snapshot-list: add options a la vzlist (see --help or man for details)
+- Improvements:
+-- vzctl create: allow existing empty VE_PRIVATE (#2450)
+-- vzctl stop/reboot: disable fsync in CT
+-- vzctl: fix check for VEID_MAX
+-- vzctl --ipadd: IPv6 support for etcnet (ALT Linux) (#2482)
+-- vzlist: more strict check for cmdline-supplied CTIDs
+-- vzlist: warn/skip invalid CTIDs in ve.conf files (#2514)
+-- vzevent: do umount CT in case of reboot (#2507)
+-- init.d/vz-redhat: stop vz earlier (#2478)
+-- init.d/vz-gentoo: don't call tools by absolute path (#2477)
+-- vzubc: add -wt option (add -t to invoked watch) (#2474)
+-- vzubc: remove check for watch presence
+-- vzctl.spec: cleanups, fixes, improvements
+-- vzctl set --devnodes: add /usr/lib/udev/devices
+-- minor code cleanups
+- Fixes:
+-- vzlist: fix segfault for ploop-based CT with no DISKINODES set (#2488)
+-- vzlist --json: fix showing disk usage for non-running CTs
+-- vzlist -o cpus: do not overwrite runtime value
+-- vzlist --json: skip collecting numcpu info on old kernel
+-- vzubc: fix -w/-c check
+- Documentation:
+-- man/*: correct path to scripts
+-- vzctl(8): add missing CTID to SYNOPSYS
+-- vzctl(8): document new snapshot-list options
+
+* Tue Jan  1 2013 Kir Kolyshkin <kir@openvz.org> - 4.1.2-1
+- Regressions:
+-- etc/init.d/vz-gentoo: fix missing VZREBOOTDIR (#2467)
+-- fix extra arguments parsing by add-on modules (#2428)
+-- do not whine about unknown VE_STOP_MODE parameter
+- Bug fixes:
+-- load_ploop_lib(): prevent buffer overflow with newer ploop-lib
+
+* Fri Dec  7 2012 Kir Kolyshkin <kir@openvz.org> - 4.1.1-1
+- Regressions:
+-- etc/init.d/vz*: fix accidental start of all CTs (#2424)
+-- etc/init.d/vz*: do not auto-start CTs marked with ONBOOT=no (#2456)
+-- init.d/vz*: only apply oom score if appropriate /proc file exist (#2423)
+- Fixes:
+-- vzctl set --devnodes: add /usr/lib/udev/devices
+-- vzlist --json: skip collecting numcpu info on old kernel
+- Improvements:
+-- vz.conf, init.d/vz*: support for VE_STOP_MODE global parameter (#2432)
+-- enable build for architectures not supported by OpenVZ kernel
+-- vzlist: show if onboot field is unset
+- Documentation:
+-- vz.conf(5): describe VE_STOP_MODE
+-- vzctl(8), ctid.conf(5): fix ONBOOT/--onboot description
+
+* Thu Nov  1 2012 Kir Kolyshkin <kir@openvz.org> - 4.1-1
+- New features
+- * etc/init.d/vz: restore running containers after reboot (#781)
+- * etc/init.d/vz: faster restart by doing CT suspend instead of stop (#2325)
+- * vzctl start: try to restore CT first if default dump file exists
+- * Add OOM adjustments configuration (see /etc/vz/oom-groups.conf)
+- * If a CT is locked, show pid and cmdline of a locker
+- * vzctl snapshot: add --skip-config option
+- * vzctl: add 'suspend' and 'resume' aliases (for 'chkpnt' and 'restore')
+- Fixes
+- * vzctl snapshot: fix storing CT config file
+- * vzctl snapshot-switch: fix restoring CT config file
+- * vps-create: fix checking needed disk space (#2413)
+- * vzctl set --mount_opts: fix a segfault (#2385)
+- * suse-add_ip.sh: only set default route if there is no other (#2376)
+- * set_userpass.sh: fix a bashism (#2403)
+- * etc/init.d/vz*: eliminate "Container(s) not found" msg
+- * etc/init.d/vz*: fix vzlist invocation in stop_ve(s)
+- * etc/init.d/vz-redhat: mark more local vars as such
+- * vzctl_resize_image(): initialize ploop_resize_param
+- * getlockpid(): fix potential buffer overflow
+- * Do not call xmlCleanupParser() from vzctl
+- * Fixed compilation with libcgroup-0.37-r2 (#2370)
+- * Properly return errors in cgroup_init() (#2372)
+- * Print failures in ct_do_open directly to stderr
+- * vzeventd: do process -h option
+- Improvements
+- * etc/init.d/vz* stop: set cpuunits for all CTs at once
+- * vzctl snapshot*: improve --id parameter parsing
+- * vzctl umount: handle the case when CT have deleted mount points
+- * vzevent-stop: add workaround for Fedora 17 reboot problem (#2336)
+- * vzctl restore: do not print "Starting container"
+- * vzctl restore: print 'restore failed' not 'start failed'
+- * scripts/vps-download: fix bogus warning from checkbashisms
+- * vzctl_merge_snapshot(): simplify return code handling
+- * Simplify ct_chroot() (no need to umount each mount point)
+- Documentation
+- * vzctl(8): improved vzctl create --layout/--diskspace description
+- * vzctl(8): improve --diskspace description
+- * vzctl(8): disambiguate 'it' in snapshot-switch description
+- Build system
+- * configure: add ability to alter /vz path (#421)
+- * src/Makefile.am: fix building with builddir != srcdir (#2375)
+- * Makefile.am: use AM_CPPFLAGS (not AM_CFLAGS)
+- * properly propagate /var/lib/vzctl/veip dir
+- * setver.sh: restore original configure.ac and vzctl.spec if building
+- * setver.sh: clean up dist tarball (if building) and rpms (if installing)
+- * setver.sh: add -o|--oldpackage option
+- * other minor improvements
+
+* Tue Sep 25 2012 Kir Kolyshkin <kir@openvz.org> - 4.0-1
+- New features
+- * Ability to work with non-openvz kernel (experimental,
+    see http://wiki.openvz.org/Vzctl_for_upstream_kernel)
+- * vzlist: add JSON output format (--json flag)
+- * vzctl compact: implement (to compact ploop image)
+- * vzctl snapshot: store/restore CT config on snapshot create/switch
+- * vzctl set: add --mount_opts to set mount options for ploop
+- * Implement dynamic loading of ploop library
+- * Implement ability to build w/o ploop headers (./configure --without-ploop)
+- * Split into vzctl-core and vzctl packages, removed vzctl-lib
+- * Scripts moved from /usr/lib[64]/vzctl/scripts to /usr/libexec/vzctl
+- * Added dists/scripts support for Alpine Linux
+- Fixes
+- * postcreate.sh: create /etc/resolv.conf with correct owner and perms (#2290)
+- * vzctl --help: add snapshot* and compact commands
+- * vzctl set --capability: improve cap setting code, eliminate kernel warning
+- * vzctl set --quotaugidlimit: fix working for ploop after restart
+- * vzctl start|enter|exec: eliminate race when checking CT's /sbin/init
+- * vzlist, vzctl set --save: avoid extra delimiter in features list
+- * vzlist: return default to always print CTID (use -n for names) (#2308)
+- * vzmigrate: fix for offline migration of ploop CT (#2316, #2356)
+- * vzctl.spec: add wget requirement (for vps-download)
+- * osrelease.conf: add ubuntu-12.04 (#2343)
+- * init.d/vz-redhat: fix errorneous lockfile removal (#2342)
+- * suse-add_ip.sh: do not set default route on venet0 when no IPs (#1941)
+- * arch-del_ip.sh: fixed for /etc/rc.conf case (#2367)
+- * arch-{add,del}_ip.sh: updated to deal with new Arch netcfg (#2280)
+- * configure.ac: on an x86_64, install libraries to lib64
+- * Build system: fix massively parallel build (e.g. make -j88)
+- Improvements
+- * init.d/vz*: stop CTs in the in the reverse order of start (#2330)
+- * init.d/vz-redhat: add /vz to PRUNEPATHS in /etc/updatedb.conf
+- * bash-completion: add remote completion for --ostemplate
+- * bash_completion: complete ploop commands only if supported by the kernel
+- * vzctl: call set_personality32() for 32-bit CTs on all architectures
+- * vzctl console: speed up by using bigger buffer
+- * vzctl chkpnt: fsync dump file
+- * vzctl mount,destroy,snapshot-list: error out for too many arguments
+- * vzctl set --diskinodes: warn it's ignored on ploop
+- * vzctl set --hostname: put ::1 below 127.0.0.1 in CT's /etc/hosts (#2290)
+- * vzctl set: remove --noatime (obsolete now when relatime is used)
+- * vzctl snapshot: added check for snapshot guid dup
+- * vzctl snapshot-delete: fix error code
+- * vzctl start/stop: print error for non-applicable options
+- * vzctl status: do not show 'mounted' if stat() on root/private fails
+- * vzctl status: do not show 'suspended' for running container
+- * vzctl stop: various minor improvements
+- * vzlist: add the following new fields:
+    nameserver, searchdomain, vswap, disabled, origin_sample, mount_opts
+- * vzlist, vzctl status: speed up querying mounted status
+- * vzlist: faster ploop diskspace info for unmounted case
+- * vzmigrate: rename --online to --live
+- * vzmigrate: do not use pv unless -v is specified
+- * vzmigrate: do not lose ACLs and XATTRS (#2056)
+- * vzmigrate: dump/restore first-level quota
+- * switch to new ploop_read_disk_descr()
+- * is_ploop_supported(): reimplement using /proc/vz/ploop_minor
+- * Code refactoring, moving vz- and upstream-specific stuff to hooks_{vz,ct}.c
+- * Various code cleanups
+
 * Thu May 31 2012 Kir Kolyshkin <kir@openvz.org> - 3.3-1
 - New features
   - vzmigrate: ploop live migration using ploop-copy (#2252)

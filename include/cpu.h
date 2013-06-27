@@ -22,14 +22,15 @@
 #define MINCPUUNITS		8
 
 #define CPUMASK_NBITS		1024
+#define CPUMASK_NBYTES		(CPUMASK_NBITS / (8 * sizeof(unsigned long)))
 typedef struct {
-	unsigned long bits[CPUMASK_NBITS / (8 * sizeof(unsigned long))];
+	unsigned long bits[CPUMASK_NBYTES];
 } cpumask_t;
 #define cpumask_bits(maskp)	((maskp)->bits)
 
 /** Data structure for cpu parameters.
  */
-typedef struct {
+typedef struct cpu_param {
 	unsigned long *limit;	/**< CPU usage for the CT, in per cent. */
 	unsigned long *weight;
 	unsigned long *units;	/**< CPU weight for the CT, in units. */
@@ -45,6 +46,13 @@ typedef struct {
  * @return		0 on success.
  */
 int vps_set_cpu(vps_handler *h, envid_t veid, cpu_param *cpu);
+
+
+int env_set_vcpus(envid_t veid, unsigned int vcpus);
+int set_cpumask(envid_t veid, cpumask_t *mask);
+int set_cpuunits(envid_t veid, unsigned int cpuunits);
+int set_cpuweight(envid_t veid, unsigned int cpuweight);
+int set_cpulimit(envid_t veid, unsigned int cpulimit);
 
 /**  Apply cpu parameters on Host system.
  *

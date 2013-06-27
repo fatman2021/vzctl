@@ -49,6 +49,9 @@ int vps_meminfo_set(vps_handler *h, envid_t veid, meminfo_param *gparam,
 		VE_MEMINFO_PRIVVMPAGES, 1
 	};
 
+	if (!is_vz_kernel(h))
+		return 0;
+
 	if (is_vswap_config(&vps_p->res.ub))
 			return 0;
 
@@ -78,6 +81,7 @@ int vps_meminfo_set(vps_handler *h, envid_t veid, meminfo_param *gparam,
 	switch (param->mode) {
 	case VE_MEMINFO_NONE:
 		meminfo.val = 0;
+		break;
 	case VE_MEMINFO_PAGES:
 		meminfo.val = param->val;
 		break;

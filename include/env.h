@@ -21,6 +21,7 @@
 #include "types.h"
 #include "res.h"
 #include "modules.h"
+#include <linux/vzcalluser.h>
 
 /** Shutdown timeout.
  */
@@ -33,8 +34,8 @@
 
 
 
-typedef int (*env_create_FN)(vps_handler *h, envid_t veid, int wait_p,
-				int old_wait_p, int err_p, void *data);
+typedef int (*env_create_FN)(vps_handler *h, envid_t veid, const vps_res *res,
+			int wait_p, int old_wait_p, int err_p, void *data);
 
 /** Stop modes.
  */
@@ -49,7 +50,7 @@ enum {
  * @param veid		CT ID.
  * @return		handler or NULL on error.
  */
-vps_handler *vz_open(envid_t veid);
+vps_handler *vz_open(envid_t veid, vps_param *param);
 
 /** Close CT handler.
  *
@@ -104,6 +105,27 @@ int vz_chroot(const char *root);
 int vz_env_create(vps_handler *h, envid_t veid, vps_res *res,
 	int wait_p[2], int old_wait_p[2], int err_p[2],
 				env_create_FN fn, void *data);
-int vz_setluid(envid_t veid);
-int vz_env_create_ioctl(vps_handler *h, envid_t veid, int flags);
+
+struct vps_res;
+struct arg_start {
+	struct vps_res *res;
+	int wait_p;
+	int old_wait_p;
+	int err_p;
+	envid_t veid;
+	vps_handler *h;
+	void *data;
+	env_create_FN fn;
+	int userns_p; /* while running in userns, there's extra sync needed */
+};
+
+struct env_create_param3;
+void fill_container_param(struct arg_start *arg,
+			  struct env_create_param3 *create_param);
+int exec_container_init(struct arg_start *arg,
+			struct env_create_param3 *create_param);
+
+int set_personality32();
+int vz_do_open(vps_handler *h, vps_param *param);
+int ct_do_open(vps_handler *h, vps_param *param);
 #endif

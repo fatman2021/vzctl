@@ -17,18 +17,23 @@
 
 include $(top_srcdir)/pathsubst.am
 
-vzlib_SCRIPTS = \
+script_SCRIPTS = \
 	vps-create \
-	vps-download \
 	vps-functions \
 	vps-net_add \
+	vps-netns_dev_add \
+	vps-netns_dev_del \
 	vps-net_del \
 	vzevent-stop \
 	vzevent-reboot \
-	vps-pci
+	vps-pci	\
+	vps-cpt \
+	vps-rst \
+	vps-rst-env \
+	vz-postinstall
 
 EXTRA_DIST = \
-	$(vzlib_SCRIPTS:%=%.in)
+	$(script_SCRIPTS:%=%.in)
 
 CLEANFILES = \
-	$(vzlib_SCRIPTS)
+	$(script_SCRIPTS)

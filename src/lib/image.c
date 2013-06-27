@@ -26,6 +26,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <string.h>
+#include <dlfcn.h>
 
 #include "image.h"
 #include "logger.h"
@@ -35,9 +36,25 @@
 #include "vzctl.h"
 #include "env.h"
 #include "destroy.h"
+#include "cleanup.h"
 
 #define DEFAULT_FSTYPE		"ext4"
-#define VZCTL_VE_ROOTHDD_DIR	"root.hdd"
+#define SNAPSHOT_MOUNT_ID	"snap"
+
+#ifdef HAVE_PLOOP
+struct ploop_functions ploop;
+#endif
+
+/* We want get_ploop_type() to work even if vzctl is compiled
+ * w/o ploop includes, thus a copy-paste from libploop.h:
+ */
+#ifndef HAVE_PLOOP
+enum ploop_image_mode {
+	PLOOP_EXPANDED_MODE = 0,
+	PLOOP_EXPANDED_PREALLOCATED_MODE = 1,
+	PLOOP_RAW_MODE = 2,
+};
+#endif
 
 int get_ploop_type(const char *type)
 {
@@ -49,20 +66,103 @@ int get_ploop_type(const char *type)
 		return PLOOP_EXPANDED_PREALLOCATED_MODE;
 	else if (!strcmp(type, "raw"))
 		return PLOOP_RAW_MODE;
-
 	return -1;
 }
 
-int is_ploop_supported(void)
+int ve_private_is_ploop(const char *private)
 {
-	int minor;
-	/* Use ploop_getdevice because it's a call that
-	 * - doesn't change anything
-	 * - fails if ploop is not available
-	 */
-	return (ploop_getdevice(&minor) == 0);
+	char image[PATH_MAX];
+
+	GET_DISK_DESCRIPTOR(image, private);
+
+	return (stat_file(image) == 1);
 }
 
+#ifdef HAVE_PLOOP
+/* This should only be called once */
+static int load_ploop_lib(void)
+{
+	void *h;
+	void (*resolve)(struct ploop_functions *);
+	char *err;
+	struct {
+		struct ploop_functions ploop;
+		/* Newer versions of ploop library might have struct ploop_functions
+		 * bigger than the one we are compiling against. Reserve some space
+		 * to prevent a buffer overflow.
+		 */
+		void *padding[32];
+	} src = { {0}, {0} };
+
+	h = dlopen("libploop.so", RTLD_LAZY);
+	if (!h) {
+		logger(-1, 0, "Can't load ploop library: %s", dlerror());
+		logger(-1, 0, "Please install ploop packages!");
+		return -1;
+	}
+
+	dlerror(); /* Clear any existing error */
+	resolve = dlsym(h, "ploop_resolve_functions");
+	if ((err = dlerror()) != NULL) {
+		logger(-1, 0, "Can't init ploop library: %s", err);
+		logger(-1, 0, "Please upgrade your ploop packages!");
+		dlclose(h);
+		return -1;
+	}
+
+	(*resolve)(&src.ploop);
+	if (src.padding[0] != NULL)
+		logger(1, 0, "Notice: ploop library is newer when expected");
+	memcpy(&ploop, &src.ploop, sizeof(ploop));
+
+	vzctl_init_ploop_log();
+	logger(1, 0, "The ploop library has been loaded successfully");
+	/* Don't dlclose(), we need lib for the rest of runtime */
+
+	return 0;
+}
+#endif
+
+int is_ploop_supported()
+{
+	static int ret = -1;
+
+	if (ret >= 0)
+		return ret;
+
+#ifndef HAVE_PLOOP
+	ret = 0;
+	logger(-1, 0, "Warning: ploop support is not compiled in");
+#else
+	if (stat_file("/proc/vz/ploop_minor") != 1) {
+		logger(-1, 0, "No ploop support in the kernel, or kernel is way too old.\n"
+				"Make sure you have OpenVZ kernel 042stab058.7 or later running,\n"
+				"and kernel ploop modules loaded.");
+		ret = 0;
+		return ret;
+	}
+
+	if (load_ploop_lib() != 0) {
+		/* Error is printed by load_ploop_lib() */
+		ret = 0;
+		return ret;
+	}
+
+	ret = 1;
+#endif
+	return ret;
+}
+
+#ifdef HAVE_PLOOP
+
+static void cancel_ploop_op(void *data)
+{
+	ploop.cancel_operation();
+}
+
+/* Note: caller should call is_ploop_supported() before.
+ * Currently the only caller is vps_start_custom() which does.
+ */
 int is_image_mounted(const char *ve_private)
 {
 	int ret;
@@ -70,18 +170,14 @@ int is_image_mounted(const char *ve_private)
 	char fname[PATH_MAX];
 	struct ploop_disk_images_data *di;
 
-	di = ploop_alloc_diskdescriptor();
-	if (di == NULL)
-		return -1;
 	GET_DISK_DESCRIPTOR(fname, ve_private);
-	ret = ploop_read_diskdescriptor(fname, di);
+	ret = ploop.read_disk_descr(&di, fname);
 	if (ret) {
 		logger(-1, 0, "Failed to read %s", fname);
-		ploop_free_diskdescriptor(di);
 		return -1;
 	}
-	ret = ploop_get_dev(di, dev, sizeof(dev));
-	ploop_free_diskdescriptor(di);
+	ret = ploop.get_dev(di, dev, sizeof(dev));
+	ploop.free_diskdescriptor(di);
 
 	return (ret == 0);
 }
@@ -93,14 +189,13 @@ int vzctl_mount_image(const char *ve_private, struct vzctl_mount_param *param)
 	char fname[PATH_MAX];
 	struct ploop_disk_images_data *di;
 
-	di = ploop_alloc_diskdescriptor();
-	if (di == NULL)
-		return VZ_RESOURCE_ERROR;
+	if (!is_ploop_supported())
+		return VZ_PLOOP_UNSUP;
+
 	GET_DISK_DESCRIPTOR(fname, ve_private);
-	ret = ploop_read_diskdescriptor(fname, di);
+	ret = ploop.read_disk_descr(&di, fname);
 	if (ret) {
 		logger(-1, 0, "Failed to read %s", fname);
-		ploop_free_diskdescriptor(di);
 		return VZCTL_E_MOUNT_IMAGE;
 	}
 
@@ -109,13 +204,13 @@ int vzctl_mount_image(const char *ve_private, struct vzctl_mount_param *param)
 	mount_param.quota = param->quota;
 	mount_param.mount_data = param->mount_data;
 
-	ret = ploop_mount_image(di, &mount_param);
+	PLOOP_CLEANUP(ret = ploop.mount_image(di, &mount_param));
 	if (ret) {
 		logger(-1, 0, "Failed to mount image: %s [%d]",
-				ploop_get_last_error(), ret);
+				ploop.get_last_error(), ret);
 		ret = VZCTL_E_MOUNT_IMAGE;
 	}
-	ploop_free_diskdescriptor(di);
+	ploop.free_diskdescriptor(di);
 	return ret;
 }
 
@@ -125,25 +220,23 @@ int vzctl_umount_image(const char *ve_private)
 	char fname[PATH_MAX];
 	struct ploop_disk_images_data *di;
 
-	di = ploop_alloc_diskdescriptor();
-	if (di == NULL)
-		return VZ_RESOURCE_ERROR;
+	if (!is_ploop_supported())
+		return VZ_PLOOP_UNSUP;
 
 	GET_DISK_DESCRIPTOR(fname, ve_private);
-	ret = ploop_read_diskdescriptor(fname, di);
+	ret = ploop.read_disk_descr(&di, fname);
 	if (ret) {
 		logger(-1, 0, "Failed to read %s", fname);
-		ploop_free_diskdescriptor(di);
 		return VZCTL_E_UMOUNT_IMAGE;
 	}
 
-	ret = ploop_umount_image(di);
+	PLOOP_CLEANUP(ret = ploop.umount_image(di));
 	if (ret) {
 		logger(-1, 0, "Failed to umount image: %s [%d]",
-				ploop_get_last_error(), ret);
+				ploop.get_last_error(), ret);
 		ret = VZCTL_E_UMOUNT_IMAGE;
 	}
-	ploop_free_diskdescriptor(di);
+	ploop.free_diskdescriptor(di);
 	return ret;
 }
 
@@ -154,6 +247,9 @@ int vzctl_create_image(const char *ve_private,
 	struct ploop_create_param create_param = {};
 	char dir[PATH_MAX];
 	char image[PATH_MAX];
+
+	if (!is_ploop_supported())
+		return VZ_PLOOP_UNSUP;
 
 	snprintf(dir, sizeof(dir), "%s/" VZCTL_VE_ROOTHDD_DIR, ve_private);
 	ret = make_dir_mode(dir, 1, 0700);
@@ -167,11 +263,11 @@ int vzctl_create_image(const char *ve_private,
 	create_param.fstype = DEFAULT_FSTYPE;
 	create_param.size = param->size * 2; /* Kb to 512b sectors */
 	create_param.image = image;
-	ret = ploop_create_image(&create_param);
+	PLOOP_CLEANUP(ret = ploop.create_image(&create_param));
 	if (ret) {
 		rmdir(dir);
 		logger(-1, 0, "Failed to create image: %s [%d]",
-				ploop_get_last_error(), ret);
+				ploop.get_last_error(), ret);
 		return VZCTL_E_CREATE_IMAGE;
 	}
 	return 0;
@@ -183,23 +279,22 @@ int vzctl_convert_image(const char *ve_private, int mode)
 	char fname[PATH_MAX];
 	struct ploop_disk_images_data *di;
 
-	di = ploop_alloc_diskdescriptor();
-	if (di == NULL)
-		return VZ_RESOURCE_ERROR;
+	if (!is_ploop_supported())
+		return VZ_PLOOP_UNSUP;
+
 	GET_DISK_DESCRIPTOR(fname, ve_private);
-	ret = ploop_read_diskdescriptor(fname, di);
+	ret = ploop.read_disk_descr(&di, fname);
 	if (ret) {
 		logger(-1, 0, "Failed to read %s", fname);
-		ploop_free_diskdescriptor(di);
 		return VZCTL_E_CONVERT_IMAGE;
 	}
-	ret = ploop_convert_image(di, mode, 0);
+	PLOOP_CLEANUP(ret = ploop.convert_image(di, mode, 0));
 	if (ret) {
 		logger(-1, 0, "Failed to convert image: %s [%d]",
-				ploop_get_last_error(), ret);
+				ploop.get_last_error(), ret);
 		ret = VZCTL_E_CONVERT_IMAGE;
 	}
-	ploop_free_diskdescriptor(di);
+	ploop.free_diskdescriptor(di);
 	return ret;
 }
 
@@ -207,42 +302,41 @@ int vzctl_resize_image(const char *ve_private, unsigned long long newsize)
 {
 	int ret;
 	struct ploop_disk_images_data *di;
-	struct ploop_resize_param param;
+	struct ploop_resize_param param = {};
 	char fname[PATH_MAX];
+
+	if (!is_ploop_supported())
+		return VZ_PLOOP_UNSUP;
 
 	if (ve_private == NULL) {
 		logger(-1, 0, "Failed to resize image: "
 				"CT private is not specified");
-		return VZCTL_E_RESIZE_IMAGE;
+		return VZ_VE_PRIVATE_NOTSET;
 	}
 
-	if (check_ploop_size(newsize) < 0)
-		return VZ_DISKSPACE_NOT_SET;
-
-	di = ploop_alloc_diskdescriptor();
-	if (di == NULL)
-		return VZ_RESOURCE_ERROR;
 	GET_DISK_DESCRIPTOR(fname, ve_private);
-	ret = ploop_read_diskdescriptor(fname, di);
+	ret = ploop.read_disk_descr(&di, fname);
 	if (ret) {
 		logger(-1, 0, "Failed to read %s", fname);
-		ploop_free_diskdescriptor(di);
 		return VZCTL_E_RESIZE_IMAGE;
 	}
 	param.size = newsize * 2; /* Kb to 512b sectors */
-	ret = ploop_resize_image(di, &param);
+	PLOOP_CLEANUP(ret = ploop.resize_image(di, &param));
 	if (ret) {
 		logger(-1, 0, "Failed to resize image: %s [%d]",
-				ploop_get_last_error(), ret);
+				ploop.get_last_error(), ret);
 		ret = VZCTL_E_RESIZE_IMAGE;
 	}
-	ploop_free_diskdescriptor(di);
+	ploop.free_diskdescriptor(di);
 	return ret;
 }
 
+/* Note: caller should call is_ploop_supported() before.
+ * Currently the only caller is fill_2quota_param() which does.
+ */
 int vzctl_get_ploop_dev(const char *mnt, char *out, int len)
 {
-	return ploop_get_partition_by_mnt(mnt, out, len);
+	return ploop.get_partition_by_mnt(mnt, out, len);
 }
 
 int vzctl_create_snapshot(const char *ve_private, const char *guid)
@@ -252,29 +346,28 @@ int vzctl_create_snapshot(const char *ve_private, const char *guid)
 	int ret;
 	struct ploop_snapshot_param param = {};
 
+	if (!is_ploop_supported())
+		return VZ_PLOOP_UNSUP;
+
 	if (ve_private == NULL) {
 		logger(-1, 0, "Failed to create snapshot: "
 				"CT private is not specified");
 		return VZ_VE_PRIVATE_NOTSET;
 	}
-	di = ploop_alloc_diskdescriptor();
-	if (di == NULL)
-		return VZ_RESOURCE_ERROR;
 	GET_DISK_DESCRIPTOR(fname, ve_private);
-	if (ploop_read_diskdescriptor(fname, di)) {
+	if (ploop.read_disk_descr(&di, fname)) {
 		logger(-1, 0, "Failed to read %s", fname);
-		ploop_free_diskdescriptor(di);
 		return VZCTL_E_CREATE_SNAPSHOT;
 	}
 	param.guid = strdup(guid);
-	ret = ploop_create_snapshot(di, &param);
+	PLOOP_CLEANUP(ret = ploop.create_snapshot(di, &param));
 	free(param.guid);
 	if (ret) {
 		logger(-1, 0, "Failed to create snapshot: %s [%d]",
-				ploop_get_last_error(), ret);
+				ploop.get_last_error(), ret);
 		ret = VZCTL_E_CREATE_SNAPSHOT;
 	}
-	ploop_free_diskdescriptor(di);
+	ploop.free_diskdescriptor(di);
 
 	return ret;
 }
@@ -285,27 +378,26 @@ int vzctl_delete_snapshot(const char *ve_private, const char *guid)
 	struct ploop_disk_images_data *di;
 	int ret;
 
+	if (!is_ploop_supported())
+		return VZ_PLOOP_UNSUP;
+
 	if (ve_private == NULL) {
 		logger(-1, 0, "Failed to delete snapshot: "
 				"CT private is not specified");
 		return VZ_VE_PRIVATE_NOTSET;
 	}
-	di = ploop_alloc_diskdescriptor();
-	if (di == NULL)
-		return VZ_RESOURCE_ERROR;
 	GET_DISK_DESCRIPTOR(fname, ve_private);
-	if (ploop_read_diskdescriptor(fname, di)) {
+	if (ploop.read_disk_descr(&di, fname)) {
 		logger(-1, 0, "Failed to read %s", fname);
-		ploop_free_diskdescriptor(di);
-		return VZCTL_E_CREATE_SNAPSHOT;
+		return VZCTL_E_DELETE_SNAPSHOT;
 	}
-	ret = ploop_delete_snapshot(di, guid);
+	PLOOP_CLEANUP(ret = ploop.delete_snapshot(di, guid));
 	if (ret) {
 		logger(-1, 0, "Failed to delete snapshot: %s [%d]",
-				ploop_get_last_error(), ret);
+				ploop.get_last_error(), ret);
 		ret = VZCTL_E_DELETE_SNAPSHOT;
 	}
-	ploop_free_diskdescriptor(di);
+	ploop.free_diskdescriptor(di);
 
 	return ret;
 }
@@ -317,6 +409,9 @@ int vzctl_merge_snapshot(const char *ve_private, const char *guid)
 	int ret;
 	struct ploop_merge_param param = {};
 
+	if (!is_ploop_supported())
+		return VZ_PLOOP_UNSUP;
+
 	if (guid == NULL)
 		return VZCTL_E_MERGE_SNAPSHOT;
 	if (ve_private == NULL) {
@@ -324,49 +419,109 @@ int vzctl_merge_snapshot(const char *ve_private, const char *guid)
 				"CT private is not specified");
 		return VZ_VE_PRIVATE_NOTSET;
 	}
-	di = ploop_alloc_diskdescriptor();
-	if (di == NULL)
-		return VZ_RESOURCE_ERROR;
 	GET_DISK_DESCRIPTOR(fname, ve_private);
-	ret = VZCTL_E_MERGE_SNAPSHOT;
-	if (ploop_read_diskdescriptor(fname, di)) {
+	if (ploop.read_disk_descr(&di, fname)) {
 		logger(-1, 0, "Failed to read %s", fname);
-		goto err;
+		return VZCTL_E_MERGE_SNAPSHOT;
 	}
 	param.guid = guid;
-	ret = ploop_merge_snapshot(di, &param);
+	PLOOP_CLEANUP(ret = ploop.merge_snapshot(di, &param));
 	if (ret) {
 		logger(-1, 0, "Failed to merge snapshot %s: %s [%d]",
-				guid, ploop_get_last_error(), ret);
+				guid, ploop.get_last_error(), ret);
+		ret = VZCTL_E_MERGE_SNAPSHOT;
+	}
+
+	ploop.free_diskdescriptor(di);
+
+	return ret;
+}
+
+
+const char *generate_snapshot_component_name(unsigned int envid,
+		const char *data, char *buf, int len)
+{
+	snprintf(buf, len, "%d-%s-%s", envid, SNAPSHOT_MOUNT_ID, data);
+	return buf;
+}
+
+int vzctl_mount_snapshot(unsigned envid, const char *ve_private,
+		struct vzctl_mount_param *param)
+{
+	int ret = VZCTL_E_MOUNT_SNAPSHOT;
+	char fname[PATH_MAX];
+	struct ploop_disk_images_data *di;
+	struct ploop_mount_param mount_param = {};
+
+	if (!is_ploop_supported())
+		return VZ_PLOOP_UNSUP;
+
+	GET_DISK_DESCRIPTOR(fname, ve_private);
+	if (ploop.read_disk_descr(&di, fname)) {
+		logger(-1, 0, "Failed to read %s", fname);
+		return ret;
+	}
+
+	mount_param.ro = param->ro;
+	if (param->mount_by_parent_guid) {
+		mount_param.guid = ploop.find_parent_by_guid(di, param->guid);
+		if (mount_param.guid == NULL) {
+			logger(-1, 0, "Unable to find parent guid by %s",
+					param->guid);
+			goto err;
+		}
+	} else {
+		mount_param.guid = (char *)param->guid;
+	}
+	mount_param.target = param->target;
+	ploop.set_component_name(di,
+			generate_snapshot_component_name(envid, param->guid,
+				fname, sizeof(fname)));
+
+	PLOOP_CLEANUP(ret = ploop.mount_image(di, &mount_param));
+	if (ret) {
+		logger(-1, 0, "Failed to mount snapshot %s: %s [%d]",
+				param->guid, ploop.get_last_error(), ret);
+		ret = VZCTL_E_MOUNT_SNAPSHOT;
 		goto err;
 	}
+
+	/* provide device to caller */
+	strncpy(param->device, mount_param.device, sizeof(param->device)-1);
+
 err:
-	ploop_free_diskdescriptor(di);
+	ploop.free_diskdescriptor(di);
 
-	return (ret = 0) ? 0: VZCTL_E_MERGE_SNAPSHOT;
+	return ret;
 }
 
-int ve_private_is_ploop(const char *private)
+int vzctl_umount_snapshot(unsigned envid, const char *ve_private, char *guid)
 {
-	char image[PATH_MAX];
+	int ret;
+	char fname[PATH_MAX];
+	struct ploop_disk_images_data *di;
 
-	snprintf(image, sizeof(image), "%s/%s/root.hdd",
-			private, VZCTL_VE_ROOTHDD_DIR);
-	return stat_file(image);
-}
+	if (!is_ploop_supported())
+		return VZ_PLOOP_UNSUP;
 
-int check_ploop_size(unsigned long size)
-{
-	const unsigned long max_size = /* 2T - 2G - 1M, in Kb */
-		(2ull << 30) - (2ull << 20) - (1 << 10);
+	GET_DISK_DESCRIPTOR(fname, ve_private);
+	if (ploop.read_disk_descr(&di, fname)) {
+		logger(-1, 0, "Failed to read %s", fname);
+		return VZCTL_E_UMOUNT_SNAPSHOT;
+	}
 
-	if (size < max_size)
-		return 0;
+	ploop.set_component_name(di,
+			generate_snapshot_component_name(envid, guid,
+				fname, sizeof(fname)));
 
-	logger(-1, 0, "Error: diskspace is set too big for ploop: %lu KB "
-			"(max size is %lu KB)", size, max_size - 1);
-	return -1;
+	PLOOP_CLEANUP(ret = ploop.umount_image(di));
+	ploop.free_diskdescriptor(di);
+	if (ret)
+		return vzctl_err(VZCTL_E_UMOUNT_SNAPSHOT, 0,
+				"Failed to umount snapshot %s: %s [%d]",
+				guid, ploop.get_last_error(), ret);
 
+	return 0;
 }
 
 /* Convert a CT to ploop layout
@@ -389,14 +544,13 @@ int vzctl_env_convert_ploop(vps_handler *h, envid_t veid,
 		return 0;
 	}
 	if (!is_ploop_supported()) {
-		logger(-1, 0, "No ploop support in the kernel");
-		return VZ_BAD_KERNEL;
+		return VZ_PLOOP_UNSUP;
 	}
 	if (vps_is_run(h, veid)) {
 		logger(-1, 0, "CT is running (stop it first)");
 		return VZ_VE_RUNNING;
 	}
-	if (vps_is_mounted(fs->root)) {
+	if (vps_is_mounted(fs->root, fs->private) == 1) {
 		logger(-1, 0, "CT is mounted (umount it first)");
 		return VZ_FS_MOUNTED;
 	}
@@ -404,8 +558,6 @@ int vzctl_env_convert_ploop(vps_handler *h, envid_t veid,
 		logger(-1, 0, "Error: diskspace not set");
 		return VZ_DISKSPACE_NOT_SET;
 	}
-	if (check_ploop_size(dq->diskspace[1]) < 0)
-		return VZ_DISKSPACE_NOT_SET;
 
 	snprintf(new_private, sizeof(new_private), "%s.ploop", fs->private);
 	if (make_dir_mode(new_private, 1, 0600) != 0)
@@ -448,3 +600,5 @@ err:
 		del_dir(new_private);
 	return ret;
 }
+
+#endif /* HAVE_PLOOP */

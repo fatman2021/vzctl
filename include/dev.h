@@ -26,7 +26,7 @@
 
 /** Data structure for devices.
  */
-typedef struct {
+typedef struct dev_res {
 	list_elem_t list;		/**< prev/next elements. */
 	char *name;			/**< device name. */
 	dev_t dev;			/**< device number. */
@@ -44,6 +44,9 @@ typedef struct {
 typedef struct {
 	list_head_t list;
 } pci_param;
+
+int create_static_dev(const char *root, const char *name, const char *alias,
+		mode_t mode, dev_t dev);
 
 /** Allow/disallow access to devices on host system from CT.
  *

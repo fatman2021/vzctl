@@ -15,11 +15,6 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
-
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <linux/types.h>
@@ -34,7 +29,7 @@
 
 #include "types.h"
 #include "logger.h"
-#include "config.h"
+#include "vzconfig.h"
 #include "vzerror.h"
 #include "script.h"
 
@@ -62,11 +57,11 @@ static void child_handler(int signo)
 
 static int run_event_script(envid_t ctid, const char *event)
 {
-	char script[sizeof(LIB_SCRIPTS_DIR)*2];
+	char script[sizeof(SCRIPTDIR)*2];
 	int pid;
 
-	snprintf(script, sizeof(script), "%svzevent-%s",
-			LIB_SCRIPTS_DIR, event);
+	snprintf(script, sizeof(script), "%s/vzevent-%s",
+			SCRIPTDIR, event);
 	logger(1, 0, "Running %s event script", event);
 
 	pid = fork();
@@ -263,7 +258,7 @@ int main(int argc, char **argv)
 	int daemonize = 1;
 	int opt, verbose = 0;
 
-	while ((opt = getopt(argc, argv, "dv")) != -1) {
+	while ((opt = getopt(argc, argv, "dvh")) != -1) {
 		switch (opt) {
 		case 'd':
 			daemonize = 0;

@@ -29,6 +29,7 @@
 #define	SET_USERPASS		5
 #define	SET_UGID_QUOTA		6
 #define	POST_CREATE		7
+#define	PRE_START		8
 
 typedef struct {
 	char *def_ostmpl;
@@ -38,7 +39,7 @@ typedef struct {
 
 /* Data structure for distribution specific action scripts.
  */
-typedef struct {
+typedef struct dist_actions {
 	char *add_ip;		/**< setup ip address. */
 	char *del_ip;		/**< delete ip address. */
 	char *set_hostname;	/**< setup hostname. */
@@ -46,6 +47,7 @@ typedef struct {
 	char *set_userpass;	/**< setup user password. */
 	char *set_ugid_quota;	/**< setup 2level quota. */
 	char *post_create;	/**< sostcreate actions. */
+	char *pre_start;	/**< pre start actions. */
 } dist_actions;
 
 /* Read distribution specific actions configuration file.

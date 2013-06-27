@@ -26,7 +26,10 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <sys/file.h>
+#ifdef HAVE_PLOOP
 #include <ploop/libploop.h>
+#include "image.h"
+#endif
 
 #include "types.h"
 #include "logger.h"
@@ -41,33 +44,32 @@ typedef struct {
 	int verbose;		/**< Console verbosity. */
 	char prog[32];		/**< program name. */
 	envid_t veid;		/**< Container ID (CTID). */
+	char *file;		/**< log file name */
 } log_param;
 
-log_param g_log = {NULL, 0, 1, 0, 0, "", 0};
+log_param g_log = {NULL, 0, 1, 0, 0, "", 0, NULL};
+
+#ifdef HAVE_PLOOP
+static int ploop_log = 0;
+#endif
 
 static inline void get_date(char *buf, int len)
 {
-	struct tm *p_tm_time;
-	time_t ptime;
+	time_t ptime = time(NULL);
+	struct tm *p_tm_time = localtime(&ptime);
 
-	ptime = time(NULL);
-	p_tm_time = localtime(&ptime);
 	strftime(buf, len, "%Y-%m-%dT%T%z", p_tm_time);
 }
 
 void logger(int log_level, int err_no, const char *format, ...)
 {
 	va_list ap;
+	int tmp_errno = errno;
 
 	va_start(ap, format);
 	if (!g_log.quiet && g_log.verbose >= log_level) {
-		FILE *out;
+		FILE *out = (log_level < 0) ? stderr : stdout;
 		va_list ap_save;
-
-		if (log_level < 0)
-			out = stderr;
-		else
-			out = stdout;
 
 		va_copy(ap_save, ap);
 		vfprintf(out, format, ap_save);
@@ -91,6 +93,7 @@ void logger(int log_level, int err_no, const char *format, ...)
 		fflush(g_log.fp);
 	}
 	va_end(ap);
+	errno = tmp_errno;
 }
 
 int set_log_file(char *file)
@@ -101,12 +104,20 @@ int set_log_file(char *file)
 		fclose(g_log.fp);
 		g_log.fp = NULL;
 	}
+	if (g_log.file) {
+		free(g_log.file);
+		g_log.file = NULL;
+	}
 	if (file != NULL) {
 		if ((fp = fopen(file, "a")) == NULL)
 			return -1;
 		g_log.fp = fp;
+		g_log.file = strdup(file);
 	}
-	ploop_set_log_file(file);
+#ifdef HAVE_PLOOP
+	if (ploop_log)
+		ploop.set_log_file(file);
+#endif
 	return 0;
 }
 
@@ -114,19 +125,26 @@ void free_log()
 {
 	if (g_log.fp  != NULL)
 		fclose(g_log.fp);
+	free(g_log.file);
 	memset(&g_log, 0, sizeof(g_log));
 }
 
 void set_log_level(int level)
 {
 	g_log.level = level;
-	ploop_set_log_level(level);
+#ifdef HAVE_PLOOP
+	if (ploop_log)
+		ploop.set_log_level(level);
+#endif
 }
 
 void set_log_verbose(int level)
 {
 	g_log.verbose = level;
-	ploop_set_verbose_level(level);
+#ifdef HAVE_PLOOP
+	if (ploop_log)
+		ploop.set_verbose_level(level);
+#endif
 }
 
 void set_log_ctid(envid_t id) {
@@ -135,7 +153,10 @@ void set_log_ctid(envid_t id) {
 
 void set_log_quiet(int quiet) {
 	g_log.quiet = quiet;
-	ploop_set_verbose_level(PLOOP_LOG_NOCONSOLE);
+#ifdef HAVE_PLOOP
+	if (ploop_log)
+		ploop.set_verbose_level(PLOOP_LOG_NOCONSOLE);
+#endif
 }
 
 int init_log(char *file, envid_t veid, int enable, int level, int quiet,
@@ -156,10 +177,25 @@ int init_log(char *file, envid_t veid, int enable, int level, int quiet,
 	else
 		g_log.prog[0] = 0;
 
-	ploop_set_log_file(file);
-	ploop_set_log_level(level);
-	if (!quiet)
-		ploop_set_verbose_level(level);
+#ifdef HAVE_PLOOP
+	if (ploop_log) {
+		ploop.set_log_file(file);
+		ploop.set_log_level(level);
+		if (!quiet)
+			ploop.set_verbose_level(level);
+	}
+#endif
 
 	return 0;
 }
+
+#ifdef HAVE_PLOOP
+void vzctl_init_ploop_log(void)
+{
+	ploop.set_log_file(g_log.file);
+	ploop.set_log_level(g_log.level);
+	ploop.set_verbose_level(g_log.quiet ? PLOOP_LOG_NOCONSOLE
+		: g_log.level);
+	ploop_log = 1;
+}
+#endif

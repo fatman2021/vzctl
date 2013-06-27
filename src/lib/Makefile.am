@@ -1,4 +1,4 @@
-#  Copyright (C) 2000-2008, Parallels, Inc. All rights reserved.
+#  Copyright (C) 2000-2012, Parallels, Inc. All rights reserved.
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -17,12 +17,15 @@
 
 include $(top_srcdir)/paths.am
 
-INCLUDES = -I$(top_srcdir)/include
+AM_CPPFLAGS = -I$(top_srcdir)/include \
+              -DSBINDIR=\"$(sbindir)\" \
+              -DPKGCONFDIR=\"$(pkgconfdir)\" \
+              -DSCRIPTDIR=\"$(scriptdir)\" \
+              -DVZDIR=\"$(vzdir)\" \
+              -DVEPIDDIR=\"$(vepiddir)\" \
+              $(XML_CPPFLAGS)
 
-AM_CFLAGS = -DSBINDIR=\"$(sbindir)\" \
-            -DPKGCONFDIR=\"$(pkgconfdir)\" \
-            -DPKGLIBDIR=\"$(pkglibdir)\" \
-            $(XML_CPPFLAGS)
+AM_CFLAGS = $(CGROUP_CFLAGS)
 
 LIB_VER = $(VERSION)
 
@@ -30,6 +33,7 @@ lib_LTLIBRARIES = libvzctl.la
 
 libvzctl_la_SOURCES = bitmap.c \
                       cap.c \
+                      cleanup.c \
                       config.c \
                       cpt.c \
                       cpu.c \
@@ -54,13 +58,27 @@ libvzctl_la_SOURCES = bitmap.c \
                       readelf.c \
                       res.c \
                       script.c \
-                      snapshot.c \
-                      ub.c \
                       util.c \
                       veth.c \
                       vps_configure.c \
-                      vzfeatures.c \
-                      xml.c
+                      ub.c \
+                      vzfeatures.c
+
+if HAVE_PLOOP
+libvzctl_la_SOURCES += snapshot.c xml.c
+endif
 
 libvzctl_la_LDFLAGS = -release $(LIB_VER)
-libvzctl_la_LIBADD = $(PLOOP_LIBS) $(XML_LIBS)
+libvzctl_la_LIBADD = $(XML_LIBS) $(CGROUP_LIBS) $(DL_LIBS)
+
+if HAVE_CGROUP
+libvzctl_la_SOURCES += cgroup.c hooks_ct.c
+
+lib_LTLIBRARIES += libvzchown.la
+libvzchown_la_SOURCES = chown_preload.c
+libvzchown_la_LDFLAGS = -release 1.0
+endif
+
+if HAVE_VZ_KERNEL
+libvzctl_la_SOURCES += hooks_vz.c
+endif

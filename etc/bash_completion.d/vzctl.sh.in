@@ -21,12 +21,12 @@ _get_ves()
 			@SBINDIR@/vzlist -H -S -octid 2>/dev/null
 			@SBINDIR@/vzlist -H -S -oname 2>/dev/null | $rm_empty
 			;;
-		stop|restart|enter|exec*|chkpnt)
+		stop|restart|enter|exec*|suspend|chkpnt)
 			# running CTs
 			@SBINDIR@/vzlist -H -octid 2>/dev/null
 			@SBINDIR@/vzlist -H -oname 2>/dev/null | $rm_empty
 			;;
-		restore)
+		resume|restore)
 			# suspended CTs
 			(@SBINDIR@/vzlist -HS -o status,ctid;
 			 @SBINDIR@/vzlist -HS -o status,name) 2>/dev/null | \
@@ -69,9 +69,9 @@ _vzctl()
 
 	local vzctl_common_opts="--quiet --verbose --help --version"
 	local vzctl_cmds="create destroy delete mount umount chkpnt restore \
+		suspend resume \
 		set start stop restart status quotaon quotaoff quotainit \
-		enter exec exec2 runscript convert console \
-		snapshot snapshot-switch snapshot-delete snapshot-list"
+		enter exec exec2 runscript console"
 	local vzctl_create_opts="--ostemplate --config --private --root \
 		--layout --diskspace --ipadd --hostname --name --description"
 	local vzctl_convert_opts="--layout"
@@ -85,16 +85,19 @@ _vzctl()
 		--dcachesize --numiptent --physpages --swappages \
 		--cpuunits --cpulimit --cpus --cpumask \
 		--iptables --netdev_add --netdev_del --netif_add --netif_del \
-		--diskquota \
+		--diskquota --mount_opts \
 		--diskspace --diskinodes --quotatime --quotaugidlimit \
-		--noatime --capability --devnodes --devices --applyconfig \
+		--capability --devnodes --devices --applyconfig \
 		--name --ioprio --setmode --meminfo --bootorder --features \
 		--reset_ub"
 	local vzctl_start_opts="--wait --force"
 	local vzctl_stop_opts="--fast --skip-umount"
 	local vzctl_restart_opts="$vzctl_start_opts $vzctl_stop_opts"
 	local vzctl_snapshot_create_opts="--id --name --description \
-		--skip-suspend"
+		--skip-suspend --skip-config"
+	local vzctl_snapshot_mount_opts="--id --target"
+	local vzctl_snapshot_list_opts="-H --no-header -o --output --id \
+		-L --list --help"
 
 	local iptables_names="iptable_filter iptable_mangle ipt_limit
 		ipt_multiport ipt_tos ipt_TOS ipt_REJECT ipt_TCPMSS
@@ -111,6 +114,11 @@ _vzctl()
 
 	local feature_names="sysfs nfs sit ipip ppp ipgre bridge nfsd"
 
+	if test -f /proc/vz/ploop_minor; then
+		vzctl_cmds+=" convert compact snapshot \
+			snapshot-mount snapshot-umount \
+			snapshot-switch snapshot-delete snapshot-list"
+	fi
 
 	case $COMP_CWORD in
 	1)
@@ -146,10 +154,11 @@ _vzctl()
 				# get the template path from the vz.conf
 				local vztmpl=`grep ^TEMPLATE @PKGCONFDIR@/vz.conf | cut -d "=" -f 2`
 				COMPREPLY=( $( compgen -W "$(command ls $vztmpl/cache/*.tar{,.gz,.xz,.bz2} 2>/dev/null |
-						    sed -e "s#^$vztmpl/cache/##" -e 's#\.tar\.*[gbxz2]*$##')" -- $cur ) )
+						    sed -e "s#^$vztmpl/cache/##" -e 's#\.tar\.*[gbxz2]*$##';
+						    @SBINDIR@/vztmpl-dl --list)" -- $cur ) )
 
 				;;
-			--onboot|--disabled|--noatime|--diskquota)
+			--onboot|--disabled|--diskquota)
 				COMPREPLY=( $( compgen -W "yes no" -- $cur ) )
 				;;
 			--setmode)
@@ -252,6 +261,37 @@ _vzctl()
 				# makes no sense for other parameters (UBCs
 				# etc). So no action for now.
 				;;
+			--id|--uuid)
+				# Only allow this completion
+				# when user has root privileges
+				[ "$EUID" -ne 0 ] && exit 1
+				# Get command and CTID
+				local cmd=${COMP_WORDS[1]}
+				local ve=${COMP_WORDS[2]}
+				if [ ${cmd::2} = "--" ] ; then
+					# --verbose or --quiet used
+					cmd=${COMP_WORDS[2]}
+					ve=${COMP_WORDS[3]}
+				fi
+				local ids
+				case ${cmd} in
+				    snapshot-umount)
+					# For umount, only give mounted IDs
+					ids="`@SBINDIR@/vzctl snapshot-list $ve -H -ouuid,device 2>/dev/null | awk 'NF==2 {print $1}' | tr -d '{}'`"
+					;;
+				    snapshot-*)
+					# For other commands, give all IDs
+					ids="`@SBINDIR@/vzctl snapshot-list $ve -H -ouuid 2>/dev/null | tr -d '{}'`"
+					;;
+				    *)
+					# Do not give anything for other cmds
+					# including 'snapshot' itself
+					# since it requires a new unused ID
+					exit 0
+					;;
+				esac
+				COMPREPLY=( $( compgen -W "$ids" -- $cur ) )
+				;;
 			*)
 				if [[ "${prev::2}" != "--" || "$prev" = "--save" ]]; then
 					# List options
@@ -271,7 +311,7 @@ _vzctl()
 					convert)
 						COMPREPLY=( $( compgen -W "$vzctl_convert_opts" -- $cur ) )
 						;;
-					chkpnt|restore)
+					suspend|resume|chkpnt|restore)
 						COMPREPLY=( $( compgen -W "--dumpfile" -- $cur ) )
 						;;
 					start)
@@ -286,8 +326,14 @@ _vzctl()
 					snapshot)
 						COMPREPLY=( $( compgen -W "$vzctl_snapshot_create_opts" -- $cur ) )
 						;;
-					snapshot-switch|snapshot-delete)
+					snapshot-switch|snapshot-delete|snapshot-umount)
 						COMPREPLY=( $( compgen -W "--id" -- $cur ) )
+						;;
+					snapshot-mount)
+						COMPREPLY=( $( compgen -W "$vzctl_snapshot_mount_opts" -- $cur ) )
+						;;
+					snapshot-list)
+						COMPREPLY=( $( compgen -W "$vzctl_snapshot_list_opts" -- $cur ) )
 						;;
 					*)
 						;;

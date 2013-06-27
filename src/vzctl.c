@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2000-2012, Parallels, Inc. All rights reserved.
+ *  Copyright (C) 2000-2013, Parallels, Inc. All rights reserved.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -28,7 +28,7 @@
 #include "env.h"
 #include "logger.h"
 #include "exec.h"
-#include "config.h"
+#include "vzconfig.h"
 #include "vzerror.h"
 #include "types.h"
 #include "util.h"
@@ -57,7 +57,7 @@ static void usage(int rc)
 
 	version(fp);
 	fprintf(fp,
-"Copyright (C) 2000-2012, Parallels, Inc.\n"
+"Copyright (C) 2000-2013, Parallels, Inc.\n"
 "This program may be distributed under the terms of the GNU GPL License.\n"
 "\n"
 "Usage: vzctl [options] <command> <ctid> [parameters]\n"
@@ -65,16 +65,25 @@ static void usage(int rc)
 "vzctl create <ctid> [--ostemplate <name>] [--config <name>]\n"
 "   [--layout ploop|simfs] [--hostname <name>] [--name <name>] [--ipadd <addr>]\n"
 "   [--diskspace <kbytes>] [--private <path>] [--root <path>]\n"
+"   [--local_uid <UID>] [--local_gid <GID>]\n"
 "vzctl start <ctid> [--force] [--wait]\n"
 "vzctl destroy | mount | umount | stop | restart | status <ctid>\n"
+#ifdef HAVE_PLOOP
 "vzctl convert <ctid> [--layout ploop[:mode]] [--diskspace <kbytes>]\n"
+"vzctl compact <ctid>\n"
+"vzctl snapshot <ctid> [--id <uuid>] [--name <name>] [--description <desc>]\n"
+"   [--skip-suspend]\n"
+"vzctl snapshot-switch | snapshot-delete <ctid> --id <uuid>\n"
+"vzctl snapshot-mount <ctid> --id <uuid> --target <dir>\n"
+"vzctl snapshot-umount <ctid> --id <uuid>\n"
+"vzctl snapshot-list <ctid> [-H] [-o field[,field...]] [--id <uuid>]\n"
+#endif
 "vzctl quotaon | quotaoff | quotainit <ctid>\n"
 "vzctl console <ctid> [ttyno]\n"
 "vzctl enter <ctid> [--exec <command> [arg ...]]\n"
 "vzctl exec | exec2 <ctid> <command> [arg ...]\n"
 "vzctl runscript <ctid> <script>\n"
-"vzctl chkpnt <ctid> [--dumpfile <name>]\n"
-"vzctl restore <ctid> [--dumpfile <name>]\n"
+"vzctl suspend | resume <ctid> [--dumpfile <name>]\n"
 "vzctl set <ctid> [--save] [--force] [--setmode restart|ignore]\n"
 "   [--ram <bytes>[KMG]] [--swap <bytes>[KMG]]\n"
 "   [--ipadd <addr>] [--ipdel <addr>|all] [--hostname <name>]\n"
@@ -83,8 +92,8 @@ static void usage(int rc)
 "   [--userpasswd <user>:<passwd>]\n"
 "   [--cpuunits <N>] [--cpulimit <N>] [--cpus <N>] [--cpumask <cpus>]\n"
 "   [--diskspace <soft>[:<hard>]] [--diskinodes <soft>[:<hard>]]\n"
-"   [--quotatime <N>] [--quotaugidlimit <N>]\n"
-"   [--noatime yes|no] [--capability <name>:on|off ...]\n"
+"   [--quotatime <N>] [--quotaugidlimit <N>] [--mount_opts <opt>[,<opt>...]]\n"
+"   [--capability <name>:on|off ...]\n"
 "   [--devices b|c:major:minor|all:r|w|rw]\n"
 "   [--devnodes device:r|w|rw|none]\n"
 "   [--netif_add <ifname[,mac,host_ifname,host_mac,bridge]]>]\n"
@@ -193,21 +202,26 @@ int main(int argc, char *argv[], char *envp[])
 		action = ACTION_ENTER;
 	} else if (!strcmp(argv[1], "console")) {
 		action = ACTION_CONSOLE;
+#ifdef HAVE_PLOOP
 	} else if (!strcmp(argv[1], "convert")) {
 		action = ACTION_CONVERT;
+	} else if (!strcmp(argv[1], "compact")) {
+		action = ACTION_COMPACT;
+#endif
 	} else if (!strcmp(argv[1], "status")) {
 		action = ACTION_STATUS;
 		quiet = 1;
-	} else if (!strcmp(argv[1], "chkpnt")) {
-		action = ACTION_CHKPNT;
-	} else if (!strcmp(argv[1], "restore")) {
-		action = ACTION_RESTORE;
+	} else if (!strcmp(argv[1], "suspend") || !strcmp(argv[1], "chkpnt")) {
+		action = ACTION_SUSPEND;
+	} else if (!strcmp(argv[1], "resume") || !strcmp(argv[1], "restore")) {
+		action = ACTION_RESUME;
 	} else if (!strcmp(argv[1], "quotaon")) {
 		action = ACTION_QUOTAON;
 	} else if (!strcmp(argv[1], "quotaoff")) {
 		action = ACTION_QUOTAOFF;
 	} else if (!strcmp(argv[1], "quotainit")) {
 		action = ACTION_QUOTAINIT;
+#ifdef HAVE_PLOOP
 	} else if (!strcmp(argv[1], "snapshot")) {
 		action = ACTION_SNAPSHOT_CREATE;
 	} else if (!strcmp(argv[1], "snapshot-switch")) {
@@ -216,6 +230,11 @@ int main(int argc, char *argv[], char *envp[])
 		action = ACTION_SNAPSHOT_DELETE;
 	} else if (!strcmp(argv[1], "snapshot-list")) {
 		action = ACTION_SNAPSHOT_LIST;
+	} else if (!strcmp(argv[1], "snapshot-mount")) {
+		action = ACTION_SNAPSHOT_MOUNT;
+	} else if (!strcmp(argv[1], "snapshot-umount")) {
+		action = ACTION_SNAPSHOT_UMOUNT;
+#endif
 	} else if (!strcmp(argv[1], "--help")) {
 		usage(0);
 	} else {
@@ -235,12 +254,13 @@ int main(int argc, char *argv[], char *envp[])
 	if (parse_int(argv[2], &veid)) {
 		name = strdup(argv[2]);
 		veid = get_veid_by_name(name);
-		if (veid < 0 || veid > VEID_MAX) {
-			fprintf(stderr, "Bad CT ID %s\n", argv[2]);
-			ret = VZ_INVALID_PARAMETER_VALUE;
-			goto error;
-		}
 	}
+	if (veid < 0 || veid > VEID_MAX) {
+		fprintf(stderr, "Bad CT ID %s\n", argv[2]);
+		ret = VZ_INVALID_PARAMETER_VALUE;
+		goto error;
+	}
+
 	argc -= 2; argv += 2;
 	/* getopt_long() prints argv[0] when reporting errors */
 	argv[0] = _proc_title;
@@ -278,7 +298,7 @@ int main(int argc, char *argv[], char *envp[])
 		goto error;
 	}
 	get_vps_conf_path(veid, buf, sizeof(buf));
-	if (stat_file(buf)) {
+	if (stat_file(buf) == 1) {
 		if (vps_parse_config(veid, buf, vps_p, &g_action)) {
 			ret = VZ_NOCONFIG;
 			goto error;
@@ -302,7 +322,7 @@ int main(int argc, char *argv[], char *envp[])
 	}
 	merge_vps_param(gparam, vps_p);
 	merge_global_param(cmd_p, gparam);
-	ret = run_action(veid, action, gparam, vps_p, cmd_p, argc-1, argv+1,
+	ret = run_action(veid, action, gparam, vps_p, cmd_p, argc, argv,
 		skiplock);
 
 error:

@@ -18,6 +18,7 @@
 
 #include <stdlib.h>
 #include <sys/types.h>
+#include <sys/mount.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <string.h>
@@ -25,13 +26,14 @@
 #include <linux/vzcalluser.h>
 #include <errno.h>
 #include <signal.h>
+#include <limits.h>
 
 #include "vzctl.h"
 #include "vzctl_param.h"
 #include "env.h"
 #include "logger.h"
 #include "exec.h"
-#include "config.h"
+#include "vzconfig.h"
 #include "vzerror.h"
 #include "create.h"
 #include "destroy.h"
@@ -43,6 +45,7 @@
 #include "image.h"
 #include "cpt.h"
 #include "snapshot.h"
+#include "cleanup.h"
 
 extern struct mod_action g_action;
 extern int do_enter(vps_handler *h, envid_t veid, const char *root,
@@ -102,7 +105,7 @@ static struct option set_opt[] = {
 	/*	fs param */
 	{"root",	required_argument, NULL, PARAM_ROOT},
 	{"private",	required_argument, NULL, PARAM_PRIVATE},
-	{"noatime",	required_argument, NULL, PARAM_NOATIME},
+	{"mount_opts",	required_argument, NULL, PARAM_MOUNT_OPTS},
 	/*	template	*/
 	{"ostemplate",	required_argument, NULL, PARAM_OSTEMPLATE},
 	/*	Cpu	*/
@@ -149,7 +152,7 @@ static struct option set_opt[] = {
 };
 
 static int parse_opt(envid_t veid, int argc, char *argv[], struct option *opt,
-	vps_param *param)
+	struct option *internal_opt, vps_param *param)
 {
 	int c, ret;
 
@@ -161,7 +164,7 @@ static int parse_opt(envid_t veid, int argc, char *argv[], struct option *opt,
 			break;
 		if (c == '?')
 			return VZ_INVALID_PARAMETER_VALUE;
-		ret = vps_parse_opt(veid, opt, param, c, optarg, &g_action);
+		ret = vps_parse_opt(veid, internal_opt, param, c, optarg, &g_action);
 		switch (ret) {
 			case 0:
 			case ERR_DUP:
@@ -211,7 +214,7 @@ static int parse_opt(envid_t veid, int argc, char *argv[], struct option *opt,
 static int parse_startstop_opt(int argc, char **argv, vps_param *param,
 		int start, int stop)
 {
-	int c, ret = 0;
+	int c, ret = 0, idx;
 	struct option start_options[] = {
 		{"force", no_argument, NULL, PARAM_FORCE},
 		{"skip_ve_setup", no_argument, NULL, PARAM_SKIP_VE_SETUP},
@@ -222,7 +225,7 @@ static int parse_startstop_opt(int argc, char **argv, vps_param *param,
 	};
 
 	while (1) {
-		c = getopt_long (argc, argv, "", start_options, NULL);
+		c = getopt_long (argc, argv, "", start_options, &idx);
 		if (c == -1)
 			break;
 		switch (c) {
@@ -230,44 +233,76 @@ static int parse_startstop_opt(int argc, char **argv, vps_param *param,
 			if (start)
 				param->opt.start_force = YES;
 			else
-				ret = VZ_INVALID_PARAMETER_SYNTAX;
+				goto err;
 			break;
 		case PARAM_SKIP_VE_SETUP:
 			if (start)
 				param->opt.skip_setup = YES;
 			else
-				ret = VZ_INVALID_PARAMETER_SYNTAX;
+				goto err;
 			break;
 		case PARAM_WAIT:
 			if (start)
 				param->res.misc.wait = YES;
 			else
-				ret = VZ_INVALID_PARAMETER_SYNTAX;
+				goto err;
 			break;
 		case PARAM_FAST:
 			if (stop)
 				param->opt.fast_kill = YES;
 			else
-				ret = VZ_INVALID_PARAMETER_SYNTAX;
+				goto err;
 			break;
 		case PARAM_SKIP_UMOUNT:
 			if (stop)
 				param->opt.skip_umount = YES;
 			else
-				ret = VZ_INVALID_PARAMETER_SYNTAX;
+				goto err;
 			break;
 		default:
 			ret = VZ_INVALID_PARAMETER_SYNTAX;
 			break;
 		}
 	}
+
 	return ret;
+
+err:
+	fprintf(stderr, "Option --%s is not applicable to %s command\n",
+			start_options[idx].name,
+			start ? "start" : "stop");
+
+	return VZ_INVALID_PARAMETER_SYNTAX;
+}
+
+/* Try to restore container from suspend if its default dump file exists.
+ * Otherwise return -1.
+ */
+static int try_restore(vps_handler *h, envid_t veid, vps_param *g_p,
+		vps_param *cmd_p)
+{
+	char buf[STR_SIZE];
+	char *dumpdir = g_p->res.cpt.dumpdir;
+
+	/* if dump file exists */
+	get_dump_file(veid, dumpdir, buf, sizeof(buf));
+	if (stat_file(buf) != 1)
+		return -1;
+
+	/* Do restore */
+	logger(0, 0, "Dump file %s exists, trying to restore from it", buf);
+	cmd_p->res.cpt.dumpdir = dumpdir;
+
+	return vps_restore(h, veid, g_p, CMD_RESTORE, &cmd_p->res.cpt,
+			SKIP_UMOUNT);
 }
 
 static int start(vps_handler *h, envid_t veid, vps_param *g_p,
 	vps_param *cmd_p)
 {
 	int ret;
+	const char *private = g_p->res.fs.private;
+	skipFlags skip = SKIP_NONE;
 
 	if (g_p->opt.start_disabled == YES &&
 		cmd_p->opt.start_force != YES)
@@ -275,13 +310,31 @@ static int start(vps_handler *h, envid_t veid, vps_param *g_p,
 		logger(-1, 0, "Container start disabled");
 		return VZ_VE_START_DISABLED;
 	}
+
+	if (check_var(private, "VE_PRIVATE is not set"))
+		return VZ_VE_PRIVATE_NOTSET;
+
+	if (stat_file(private) != 1) {
+		logger(-1, 0, "Container private area %s does not exist",
+				private);
+		return VZ_FS_NOPRVT;
+	}
+
 	if (vps_is_run(h, veid)) {
 		logger(-1, 0, "Container is already running");
 		return VZ_VE_RUNNING;
 	}
+	/* Try restore first */
+	ret = try_restore(h, veid, g_p, cmd_p);
+	if (ret == 0)
+		return ret;
+	if (ret != -1) /* We tried to restore */
+		skip |= SKIP_REMOUNT; /* Do not remount just mounted fs */
+	if (cmd_p->opt.skip_setup == YES)
+		skip |= SKIP_SETUP;
 	g_p->res.misc.wait = cmd_p->res.misc.wait;
-	ret = vps_start(h, veid, g_p,
-		cmd_p->opt.skip_setup == YES ? SKIP_SETUP : 0, &g_action);
+	ret = vps_start(h, veid, g_p, skip, &g_action);
+
 	return ret;
 }
 
@@ -338,13 +391,15 @@ static int parse_create_opt(envid_t veid, int argc, char **argv,
 	{"ve_layout",	required_argument, NULL, PARAM_VE_LAYOUT},
 	{"velayout",	required_argument, NULL, PARAM_VE_LAYOUT},
 	{"diskspace",	required_argument, NULL, PARAM_DISKSPACE},
+	{"local_uid",	required_argument, NULL, PARAM_LOCAL_UID},
+	{"local_gid",	required_argument, NULL, PARAM_LOCAL_GID},
 	{ NULL, 0, NULL, 0 }
 };
 
 	opt = mod_make_opt(create_options, &g_action, NULL);
 	if (opt == NULL)
 		return VZ_RESOURCE_ERROR;
-	ret = parse_opt(veid, argc, argv, opt, param);
+	ret = parse_opt(veid, argc, argv, opt, create_options, param);
 	free(opt);
 
 	return ret;
@@ -371,6 +426,7 @@ static int destroy(vps_handler *h, envid_t veid, vps_param *g_p,
 	return ret;
 }
 
+#ifdef HAVE_PLOOP
 static int parse_convert_opt(envid_t veid, int argc, char **argv,
 	vps_param *param)
 {
@@ -386,7 +442,7 @@ static int parse_convert_opt(envid_t veid, int argc, char **argv,
 	opt = mod_make_opt(convert_options, &g_action, NULL);
 	if (opt == NULL)
 		return VZ_RESOURCE_ERROR;
-	ret = parse_opt(veid, argc, argv, opt, param);
+	ret = parse_opt(veid, argc, argv, opt, convert_options, param);
 	free(opt);
 
 	return ret;
@@ -414,6 +470,58 @@ static int convert(vps_handler *h, envid_t veid, vps_param *g_p,
 			&g_p->res.fs, &g_p->res.dq, mode);
 }
 
+static int compact(vps_handler *h, envid_t veid, vps_param *g_p,
+		vps_param *cmd_p)
+{
+	char *cmd;
+	int mounted;
+	int ret;
+	const char *private	= g_p->res.fs.private;
+	const char *root	= g_p->res.fs.root;
+	char fname[PATH_MAX];
+
+	if (check_var(root, "VE_ROOT is not set"))
+		return VZ_VE_ROOT_NOTSET;
+
+	if (check_var(private, "VE_PRIVATE is not set"))
+		return VZ_VE_PRIVATE_NOTSET;
+
+	if (stat_file(private) != 1) {
+		logger(-1, 0, "Container private area %s does not exist",
+				private);
+		return VZ_FS_NOPRVT;
+	}
+
+	if (!ve_private_is_ploop(private)) {
+		logger(0, 0, "Compact only makes sense for ploop containers");
+		return 0;
+	}
+
+	mounted = vps_is_mounted(root, private);
+	if (mounted == 0)
+	{
+		ret = vps_mount(h, veid, &g_p->res.fs, &g_p->res.dq,
+				SKIP_ACTION_SCRIPT);
+		if (ret != 0)
+			return ret;
+	}
+
+	GET_DISK_DESCRIPTOR(fname, private);
+	if (asprintf(&cmd, "ploop balloon discard %s", fname) < 0) {
+		logger(-1, ENOMEM, "Can't allocate string for cmd");
+		return VZ_RESOURCE_ERROR;
+	}
+	logger(1, 0, "Executing %s", cmd);
+	ret = system(cmd);
+	free(cmd);
+
+	if (mounted == 0)
+		vps_umount(h, veid, &g_p->res.fs, SKIP_ACTION_SCRIPT);
+
+	return (ret == 0) ? 0 : VZCTL_E_COMPACT_IMAGE;
+}
+#endif /* HAVE_PLOOP */
+
 static int parse_chkpnt_opt(int argc, char **argv, vps_param *vps_p)
 {
 	int c;
@@ -435,7 +543,7 @@ static int parse_chkpnt_opt(int argc, char **argv, vps_param *vps_p)
 
 	while (1) {
 		option_index = -1;
-		c = getopt_long (argc, argv, "", chkpnt_options, NULL);
+		c = getopt_long (argc, argv, "", chkpnt_options, &option_index);
 		if (c == -1)
 			break;
 		switch (c) {
@@ -510,7 +618,7 @@ static int parse_restore_opt(int argc, char **argv, vps_param *vps_p)
 
 	while (1) {
 		option_index = -1;
-		c = getopt_long (argc, argv, "", restore_options, NULL);
+		c = getopt_long (argc, argv, "", restore_options, &option_index);
 		if (c == -1)
 			break;
 		switch (c) {
@@ -559,6 +667,7 @@ err_syntax:
 	return VZ_INVALID_PARAMETER_SYNTAX;
 }
 
+#ifdef HAVE_PLOOP
 static int parse_snapshot_create_opt(envid_t veid, int argc, char **argv,
 		vps_param *param)
 {
@@ -571,13 +680,14 @@ static int parse_snapshot_create_opt(envid_t veid, int argc, char **argv,
 	{"name", required_argument, NULL, PARAM_SNAPSHOT_NAME},
 	{"description", required_argument, NULL, PARAM_SNAPSHOT_DESC},
 	{"skip-suspend", no_argument, NULL, PARAM_SNAPSHOT_SKIP_SUSPEND},
+	{"skip-config", no_argument, NULL, PARAM_SNAPSHOT_SKIP_CONFIG},
 	{ NULL, 0, NULL, 0 }
 	};
 
 	opt = mod_make_opt(snapshot_create_options, &g_action, NULL);
 	if (opt == NULL)
 		return VZ_RESOURCE_ERROR;
-	ret = parse_opt(veid, argc, argv, opt, param);
+	ret = parse_opt(veid, argc, argv, opt, snapshot_create_options, param);
 	free(opt);
 
 	return ret;
@@ -598,7 +708,7 @@ static int parse_snapshot_delete_opt(envid_t veid, int argc, char **argv,
 	opt = mod_make_opt(snapshot_delete_options, &g_action, NULL);
 	if (opt == NULL)
 		return VZ_RESOURCE_ERROR;
-	ret = parse_opt(veid, argc, argv, opt, param);
+	ret = parse_opt(veid, argc, argv, opt, snapshot_delete_options, param);
 	free(opt);
 
 	if (ret == 0 && param->snap.guid == NULL)
@@ -607,6 +717,37 @@ static int parse_snapshot_delete_opt(envid_t veid, int argc, char **argv,
 
 	return ret;
 }
+
+static int parse_snapshot_mount_opt(envid_t veid, int argc, char **argv,
+		vps_param *param)
+{
+	int ret;
+	struct option *opt;
+	static struct option snapshot_create_options[] =
+	{
+	{"id",  required_argument, NULL, PARAM_SNAPSHOT_GUID},
+	{"uuid", required_argument, NULL, PARAM_SNAPSHOT_GUID},
+	{"target", required_argument, NULL, PARAM_SNAPSHOT_MOUNT_TARGET},
+	{ NULL, 0, NULL, 0 }
+	};
+
+	opt = mod_make_opt(snapshot_create_options, &g_action, NULL);
+	if (opt == NULL)
+		return VZ_RESOURCE_ERROR;
+	ret = parse_opt(veid, argc, argv, opt, snapshot_create_options, param);
+	free(opt);
+
+	if (ret == 0 && param->snap.guid == NULL)
+		return vzctl_err(VZ_INVALID_PARAMETER_SYNTAX, 0,
+			"Invalid syntax: snapshot id is missing");
+	if (ret == 0 && param->snap.target == NULL)
+		return vzctl_err(VZ_INVALID_PARAMETER_SYNTAX, 0,
+			"Invalid syntax: mount target is missing");
+
+	return ret;
+}
+
+#endif /* HAVE_PLOOP */
 
 static int check_set_ugidlimit(unsigned long *cur, unsigned long *old,
 		int loud)
@@ -686,6 +827,15 @@ static int check_set_mode(vps_handler *h, envid_t veid, int setmode, int apply,
 					"on a running container");
 		found++;
 	}
+	/* Changing mount_opts */
+	if ( new_res->fs.mount_opts && (!old_res->fs.mount_opts ||
+			strcmp(new_res->fs.mount_opts,
+				old_res->fs.mount_opts))) {
+		if (loud)
+			logger(-1, 0, "Unable to change mount options "
+					"on a running container");
+		found++;
+	}
 
 	if (!found)
 		return 0;
@@ -729,7 +879,7 @@ static int apply_param_from_cfg(int veid, vps_param *param, char *cfg)
 	if (cfg == NULL)
 		return 0;
 	snprintf(conf, sizeof(conf), VPS_CONF_DIR "ve-%s.conf-sample", cfg);
-	if (!stat_file(conf)) {
+	if (stat_file(conf) != 1) {
 		logger(-1, 0, "Sample config file not found: %s", conf);
 		return VZ_APPLY_CONFIG_ERROR;
 	}
@@ -737,6 +887,42 @@ static int apply_param_from_cfg(int veid, vps_param *param, char *cfg)
 	vps_parse_config(veid, conf, new, &g_action);
 	merge_apply_param(param, new, cfg);
 	free_vps_param(new);
+	return 0;
+}
+
+static int check_set_opt(int argc, char *argv[], vps_param *param)
+{
+	if ((param->opt.reset_ub == YES) && (argc > 1)) {
+		logger(-1, 0, "Error: option --reset_ub is exclusive");
+		return VZ_INVALID_PARAMETER_SYNTAX;
+	}
+
+	/* A few options require --save flag */
+	if (!param->opt.save) {
+		if (param->res.name.name != NULL) {
+			logger(-1, 0, "Error: unable to use"
+				 " --name option without --save");
+			return VZ_SET_NAME_ERROR;
+		}
+		if (param->opt.save_force) {
+			logger(-1, 0, "Error: --force is useless "
+					"without --save");
+			return VZ_INVALID_PARAMETER_SYNTAX;
+		}
+		if (param->res.dq.diskspace &&
+				ve_private_is_ploop(param->g_param->res.fs.private))
+		{
+			logger(-1, 0, "Error: can't use --diskspace without --save "
+					"for a ploop-based container");
+			return VZ_INVALID_PARAMETER_SYNTAX;
+		}
+		if (param->opt.setmode == SET_RESTART) {
+			logger(-1, 0, "Error: --setmode restart doesn't make sense"
+					" without --save flag");
+			return VZ_INVALID_PARAMETER_SYNTAX;
+		}
+	}
+
 	return 0;
 }
 
@@ -749,14 +935,14 @@ static int parse_set_opt(envid_t veid, int argc, char *argv[],
 	opt = mod_make_opt(set_opt, &g_action, NULL);
 	if (opt == NULL)
 		return VZ_RESOURCE_ERROR;
-	ret = parse_opt(veid, argc, argv, opt, param);
+	ret = parse_opt(veid, argc, argv, opt, set_opt, param);
 	free(opt);
 
 	return ret;
 }
 
 static int set_ve0(vps_handler *h, vps_param *g_p,
-	vps_param *vps_p, vps_param *cmd_p)
+	vps_param *vps_p, vps_param *cmd_p, int *warn_save)
 {
 	int ret;
 	ub_param *ub;
@@ -765,12 +951,16 @@ static int set_ve0(vps_handler *h, vps_param *g_p,
 	if (cmd_p->opt.reset_ub == YES) {
 		/* Apply parameters from config */
 		ub = &vps_p->res.ub;
-		cmd_p->opt.save = NO; // suppress savewarning
+		*warn_save = 0;
 	} else {
 		/* Apply parameters from command line */
 		ub = &cmd_p->res.ub;
 		cpu = &cmd_p->res.cpu;
 	}
+
+	if (!h)
+		return 0;
+
 	ret = vps_set_ublimit(h, 0, ub);
 	if (ret)
 		return ret;
@@ -809,7 +999,7 @@ static int fix_ip_param(vps_param *conf, vps_param *cmd)
 }
 
 static int set(vps_handler *h, envid_t veid, vps_param *g_p, vps_param *vps_p,
-	vps_param *cmd_p)
+	vps_param *cmd_p, int argc, char **argv, int *warn_save)
 {
 	int ret = 0, is_run;
 	dist_actions *actions = NULL;
@@ -822,12 +1012,16 @@ static int set(vps_handler *h, envid_t veid, vps_param *g_p, vps_param *vps_p,
 		ret = check_veth_param(veid, &vps_p->res.veth, &cmd_p->res.veth,
 			&cmd_p->del_res.veth);
 		if (ret) {
-			cmd_p->opt.save = NO;
+			*warn_save = 0;
 			return ret;
 		}
 	}
 
 	cmd_p->g_param = g_p;
+	ret = check_set_opt(argc, argv, cmd_p);
+	if (ret)
+		return ret;
+
 	if (cmd_p->opt.apply_cfg_map == APPCONF_MAP_NAME) {
 		ret = set_name(veid, g_p->res.name.name, g_p->res.name.name);
 		if (ret != 0)
@@ -836,25 +1030,14 @@ static int set(vps_handler *h, envid_t veid, vps_param *g_p, vps_param *vps_p,
 	/* Reset UB parameters from config  */
 	if (cmd_p->opt.reset_ub == YES && h != NULL) {
 		ret = vps_set_ublimit(h, veid, &vps_p->res.ub);
-		cmd_p->opt.save = NO; // suppress savewarning
+		*warn_save = 0;
 		return ret;
 	}
-	if (cmd_p->opt.setmode == SET_RESTART && !cmd_p->opt.save) {
-		logger(-1, 0, "Error: --setmode restart doesn't make sense"
-			" without --save flag");
-		return VZ_INVALID_PARAMETER_SYNTAX;
-	}
 	if (cmd_p->res.name.name != NULL) {
-		if (!cmd_p->opt.save) {
-			logger(-1, 0, "Error: unable to use"
-				 " --name option without --save");
-			ret =  VZ_SET_NAME_ERROR;
-		} else {
-			ret = set_name(veid, cmd_p->res.name.name,
+		ret = set_name(veid, cmd_p->res.name.name,
 				vps_p->res.name.name);
-		}
 		if (ret) {
-			cmd_p->opt.save = NO;
+			*warn_save = 0;
 			return ret;
 		}
 	}
@@ -883,18 +1066,24 @@ static int set(vps_handler *h, envid_t veid, vps_param *g_p, vps_param *vps_p,
 		if (!actions)
 			return VZ_RESOURCE_ERROR;
 		dist_name = get_dist_name(&g_p->res.tmpl);
-		if ((ret = read_dist_actions(dist_name, DIST_DIR, actions)))
+		if ((ret = read_dist_actions(dist_name, DIST_DIR, actions))) {
+			free(actions);
 			return ret;
+		}
 		free(dist_name);
 	}
 	/* Setup password */
 	if (h != NULL && !list_empty(&cmd_p->res.misc.userpw)) {
-		if (!is_run)
-			if ((ret = vps_start(h, veid, g_p,
-				SKIP_SETUP|SKIP_ACTION_SCRIPT, NULL)))
-			{
+		if (!is_run) {
+			ret = vps_start(h, veid, g_p,
+					SKIP_SETUP|SKIP_ACTION_SCRIPT, NULL);
+			if (ret)
 				goto err;
-			}
+		}
+
+		if (argc == 2) /* only --userpasswd and its value */
+			*warn_save = 0;
+
 		ret = vps_pw_configure(h, veid, actions, g_p->res.fs.root,
 			&cmd_p->res.misc.userpw);
 		if (!is_run)
@@ -911,35 +1100,57 @@ static int set(vps_handler *h, envid_t veid, vps_param *g_p, vps_param *vps_p,
 		}
 	}
 	/* Resize ploop image if --diskspace is supplied */
-	if (ve_private_is_ploop(g_p->res.fs.private) &&
-			cmd_p->res.dq.diskspace)
+	if (cmd_p->res.dq.diskspace &&
+			ve_private_is_ploop(g_p->res.fs.private))
 	{
+		if (! is_ploop_supported()) {
+			ret=VZ_PLOOP_UNSUP;
+			goto err;
+		}
+#ifdef HAVE_PLOOP
 		if ((ret = vzctl_resize_image(g_p->res.fs.private,
 						cmd_p->res.dq.diskspace[1])))
-			return ret;
+			goto err;
+#endif
+	}
+	/* Warn that --diskinodes is ignored for ploop CT */
+	if (cmd_p->res.dq.diskinodes &&
+			ve_private_is_ploop(g_p->res.fs.private))
+	{
+		logger(0, 0, "Warning: --diskinodes is ignored for "
+				"ploop-based container");
 	}
 	/* Skip applying parameters on stopped CT */
 	if (cmd_p->opt.save && !is_run) {
 		ret = mod_setup(h, veid, STATE_STOPPED, SKIP_NONE, &g_action,
 			cmd_p);
-		return ret;
+		goto err;
 	}
 	if (is_run) {
+		/* Check if restart is required */
 		ret = check_set_mode(h, veid, cmd_p->opt.setmode,
 			cmd_p->opt.save, &cmd_p->res, &g_p->res);
 		if (ret) {
 			if (ret < 0) {
+				/* ignore but return error */
 				ret = VZ_VE_RUNNING;
-				goto err;
 			} else {
+				/* do restart */
 				merge_vps_param(g_p, cmd_p);
 				ret = restart(h, veid, g_p, cmd_p);
-				goto err;
 			}
+			goto err;
 		}
 	}
-	ret = vps_setup_res(h, veid, actions, &g_p->res.fs, cmd_p,
-		STATE_RUNNING, SKIP_NONE, &g_action);
+
+	/* Only try to apply parameters on a supported kernel */
+	if (h) {
+		/* If CT is not running, call this anyway to get relevant
+		 * errors messages like "Can't set CPU: CT is not running"
+		 */
+		ret = vps_setup_res(h, veid, actions, &g_p->res.fs, cmd_p,
+				STATE_RUNNING, SKIP_NONE, &g_action);
+	}
 err:
 	free_dist_actions(actions);
 	free(actions);
@@ -947,16 +1158,43 @@ err:
 	return ret;
 }
 
-static int mount(vps_handler *h, envid_t veid, vps_param *g_p,
-	vps_param *cmd_p)
+static int vps_set(vps_handler *h, envid_t veid,
+		vps_param *g_p, vps_param *vps_p, vps_param *cmd_p,
+		int argc, char **argv)
 {
-	return vps_mount(h, veid, &g_p->res.fs, &g_p->res.dq, 0);
-}
+	int ret;
+	int warn_save = 1;
+	char fname[STR_SIZE];
 
-static int umount(vps_handler *h, envid_t veid, vps_param *g_p,
-	vps_param *cmd_p)
-{
-	return vps_umount(h, veid, &g_p->res.fs, 0);
+	if (veid == 0)
+		ret = set_ve0(h, g_p, vps_p, cmd_p, &warn_save);
+	else
+		ret = set(h, veid, g_p, vps_p, cmd_p, argc, argv, &warn_save);
+
+	if (cmd_p->opt.save == YES) {
+		if (ret) {
+			logger(-1, 0, "Error: failed to apply "
+					"some parameters, not saving "
+					"configuration file!");
+			return ret;
+		}
+
+		get_vps_conf_path(veid, fname, sizeof(fname));
+		/* Warn if config does not exist */
+		if (stat_file(fname) != 1)
+			logger(-1, errno, "WARNING: %s not found", fname);
+
+		ret = vps_save_config(veid, fname, cmd_p, vps_p, &g_action);
+	}
+	else if (warn_save && !ret) {
+		int is_run = h != NULL && vps_is_run(h, veid);
+		logger(0, 0, "WARNING: Settings were not saved"
+				" to config %s(use --save flag)",
+				is_run ? "and will be lost after CT restart "
+				: "");
+	}
+
+	return ret;
 }
 
 static int enter(vps_handler *h, envid_t veid, const char *root,
@@ -1034,6 +1272,7 @@ static int exec(vps_handler *h, act_t action, envid_t veid, const char *root,
 	}
 	logger(1, 0, "Executing command: %s", buf);
 	ret = vps_exec(h, veid, root, mode, arg, NULL, NULL, 0);
+	free(buf);
 
 	return ret;
 }
@@ -1083,24 +1322,23 @@ static int restore(vps_handler *h, envid_t veid, vps_param *g_p,
 	if (cmd == CMD_KILL || cmd == CMD_RESUME)
 		return cpt_cmd(h, veid, g_p->res.fs.root,
 				CMD_RESTORE, cmd, cmd_p->res.cpt.ctx);
-	return vps_restore(h, veid, g_p, cmd, &cmd_p->res.cpt);
+	return vps_restore(h, veid, g_p, cmd, &cmd_p->res.cpt, SKIP_NONE);
 }
 
 static int show_status(vps_handler *h, envid_t veid, vps_param *param)
 {
-	int exist = 0, mounted = 0, run = 0, suspended = 0;
+	int exist, mounted, run, suspended = 0;
 	char buf[STR_SIZE];
 	fs_param *fs = &param->res.fs;
 
 	get_vps_conf_path(veid, buf, sizeof(buf));
-	if (fs->private != NULL && stat_file(fs->private) && stat_file(buf))
-		exist = 1;
-	mounted = vps_is_mounted(fs->root);
+	exist = (fs->private != NULL && stat_file(fs->private) == 1
+			&& stat_file(buf) == 1);
+	mounted = (vps_is_mounted(fs->root, fs->private) == 1);
 	run = vps_is_run(h, veid);
-	if (exist == 1) {
+	if (exist && !run) {
 		get_dump_file(veid, param->res.cpt.dumpdir, buf, sizeof(buf));
-		if (stat_file(buf))
-			suspended = 1;
+		suspended = (stat_file(buf) == 1);
 	}
 	printf("CTID %d %s %s %s%s\n", veid,
 		exist ? "exist" : "deleted",
@@ -1119,7 +1357,7 @@ static int parse_custom_opt(envid_t veid, int argc, char **argv,
 	opt = mod_make_opt(NULL, &g_action, name);
 	if (opt == NULL)
 		return VZ_RESOURCE_ERROR;
-	ret = parse_opt(veid, argc, argv, opt, param);
+	ret = parse_opt(veid, argc, argv, opt, NULL, param);
 	free(opt);
 
 	return ret;
@@ -1137,9 +1375,11 @@ int parse_action_opt(envid_t veid, act_t action, int argc, char *argv[],
 	case ACTION_CREATE:
 		ret = parse_create_opt(veid, argc, argv, param);
 		break;
+#ifdef HAVE_PLOOP
 	case ACTION_CONVERT:
 		ret = parse_convert_opt(veid, argc, argv, param);
 		break;
+#endif
 	case ACTION_START:
 		ret = parse_startstop_opt(argc, argv, param, 1, 0);
 		break;
@@ -1165,10 +1405,6 @@ int parse_action_opt(envid_t veid, act_t action, int argc, char *argv[],
 			}
 		}
 		break;
-	case ACTION_DESTROY:
-		break;
-	case ACTION_MOUNT:
-		break;
 	case ACTION_EXEC:
 	case ACTION_EXEC2:
 	case ACTION_EXEC3:
@@ -1186,23 +1422,29 @@ int parse_action_opt(envid_t veid, act_t action, int argc, char *argv[],
 	case ACTION_CUSTOM:
 		ret = parse_custom_opt(veid, argc, argv, param, name);
 		break;
-	case ACTION_CHKPNT:
+	case ACTION_SUSPEND:
 		ret = parse_chkpnt_opt(argc, argv, param);
 		break;
-	case ACTION_RESTORE:
+	case ACTION_RESUME:
 		ret = parse_restore_opt(argc, argv, param);
 		break;
 	case ACTION_CONSOLE:
 		break;
+#ifdef HAVE_PLOOP
 	case ACTION_SNAPSHOT_CREATE:
 		ret = parse_snapshot_create_opt(veid, argc, argv, param);
 		break;
 	case ACTION_SNAPSHOT_DELETE:
 	case ACTION_SNAPSHOT_SWITCH:
+	case ACTION_SNAPSHOT_UMOUNT:
 		ret = parse_snapshot_delete_opt(veid, argc, argv, param);
 		break;
 	case ACTION_SNAPSHOT_LIST:
 		break;
+	case ACTION_SNAPSHOT_MOUNT:
+		ret = parse_snapshot_mount_opt(veid, argc, argv, param);
+		break;
+#endif
 	default :
 		if ((argc - 1) > 0) {
 			fprintf (stderr, "Invalid options: ");
@@ -1215,18 +1457,24 @@ int parse_action_opt(envid_t veid, act_t action, int argc, char *argv[],
 	return ret;
 }
 
+
+static void cleanup_callback(int sig)
+{
+	fprintf(stderr, "\nCancelling...\n");
+	run_cleanup();
+}
+
 int run_action(envid_t veid, act_t action, vps_param *g_p, vps_param *vps_p,
 	vps_param *cmd_p, int argc, char **argv, int skiplock)
 {
 	vps_handler *h = NULL;
-	int ret, lock_id = -1;
+	int ret = 0, lock_id = -1;
 	struct sigaction act;
-	char fname[STR_SIZE];
 
-	ret = 0;
-	if ((h = vz_open(veid)) == NULL) {
-		/* Accept to run "set --save --force" on non-openvz
-		 * kernel */
+	if ((h = vz_open(veid, g_p)) == NULL) {
+		/* Accept to run "set --save --force" on any kernel,
+		 * otherwise error out if initialization failed
+		 */
 		if (action != ACTION_SET ||
 		    cmd_p->opt.save_force != YES ||
 		    cmd_p->opt.save != YES)
@@ -1234,6 +1482,14 @@ int run_action(envid_t veid, act_t action, vps_param *g_p, vps_param *vps_p,
 			return VZ_BAD_KERNEL;
 		}
 	}
+
+	if (!is_vz_kernel(h)) {
+		/* No simfs support, emulate it with a bind mount */
+		g_p->res.fs.flags |= MS_BIND;
+		/* No quotas, regardless of what the config says */
+		g_p->res.dq.enable = NO;
+	}
+
 	if (action != ACTION_EXEC &&
 		action != ACTION_EXEC2 &&
 		action != ACTION_EXEC3 &&
@@ -1253,9 +1509,11 @@ int run_action(envid_t veid, act_t action, vps_param *g_p, vps_param *vps_p,
 				goto err;
 			}
 		}
+
 		sigemptyset(&act.sa_mask);
-		act.sa_handler = SIG_IGN;
+		act.sa_handler = cleanup_callback;
 		act.sa_flags = 0;
+		sigaction(SIGTERM, &act, NULL);
 		sigaction(SIGINT, &act, NULL);
 	}
 	switch (action) {
@@ -1266,10 +1524,10 @@ int run_action(envid_t veid, act_t action, vps_param *g_p, vps_param *vps_p,
 		ret = destroy(h, veid, g_p, cmd_p);
 		break;
 	case ACTION_MOUNT:
-		ret = mount(h, veid, g_p, cmd_p);
+		ret = vps_mount(h, veid, &g_p->res.fs, &g_p->res.dq, 0);
 		break;
 	case ACTION_UMOUNT:
-		ret = umount(h, veid, g_p, cmd_p);
+		ret = vps_umount(h, veid, &g_p->res.fs, 0);
 		break;
 	case ACTION_START:
 		ret = start(h, veid, g_p, cmd_p);
@@ -1280,62 +1538,41 @@ int run_action(envid_t veid, act_t action, vps_param *g_p, vps_param *vps_p,
 	case ACTION_RESTART:
 		ret = restart(h, veid, g_p, cmd_p);
 		break;
+#ifdef HAVE_PLOOP
 	case ACTION_CONVERT:
 		ret = convert(h, veid, g_p, cmd_p);
 		break;
+	case ACTION_COMPACT:
+		ret = compact(h, veid, g_p, cmd_p);
+		break;
+#endif
 	case ACTION_SET:
-		if (veid == 0)
-			ret = set_ve0(h, g_p, vps_p, cmd_p);
-		else
-			ret = set(h, veid, g_p, vps_p, cmd_p);
-		if (cmd_p->opt.save == YES) {
-			if (ret) {
-				logger(-1, 0, "Error: failed to apply "
-						"some parameters, not saving "
-						"configuration file!");
-				break;
-			}
-			get_vps_conf_path(veid, fname, sizeof(fname));
-			/* Warn if config does not exist */
-			if (!stat_file(fname))
-				logger(-1, errno, "WARNING: %s not found",
-					fname);
-			ret = vps_save_config(veid, fname,
-					cmd_p, vps_p, &g_action);
-		} else if (cmd_p->opt.save != NO) {
-			if (list_empty(&cmd_p->res.misc.userpw)) {
-				int is_run = h != NULL && vps_is_run(h, veid);
-				logger(0, 0, "WARNING: Settings were not saved"
-				" to config %s(use --save flag)",
-				is_run ? "and will be lost after CT restart "
-					: "");
-			}
-		}
+		ret = vps_set(h, veid, g_p, vps_p, cmd_p, argc-1, argv+1);
 		break;
 	case ACTION_STATUS:
 		ret = show_status(h, veid, g_p);
 		break;
 	case ACTION_ENTER:
-		ret = enter(h, veid, g_p->res.fs.root, argc, argv);
+		ret = enter(h, veid, g_p->res.fs.root, argc-1, argv+1);
 		break;
 	case ACTION_CONSOLE:
-		ret = console_attach(h, veid, argc, argv);
+		ret = console_attach(h, veid, argc-1, argv+1);
 		break;
 	case ACTION_EXEC:
 	case ACTION_EXEC2:
 	case ACTION_EXEC3:
-		ret = exec(h, action, veid, g_p->res.fs.root, argc, argv);
+		ret = exec(h, action, veid, g_p->res.fs.root, argc-1, argv+1);
 		if (ret && action == ACTION_EXEC)
 			ret = VZ_COMMAND_EXECUTION_ERROR;
 		break;
-	case ACTION_CHKPNT:
+	case ACTION_SUSPEND:
 		ret = chkpnt(h, veid, g_p, cmd_p);
 		break;
-	case ACTION_RESTORE:
+	case ACTION_RESUME:
 		ret = restore(h, veid, g_p, cmd_p);
 		break;
 	case ACTION_RUNSCRIPT:
-		ret = vps_run_script(h, veid, argv[0], g_p);
+		ret = vps_run_script(h, veid, argv[1], g_p);
 		break;
 
 #define CHECK_DQ(r)								\
@@ -1364,6 +1601,8 @@ int run_action(envid_t veid, act_t action, vps_param *g_p, vps_param *vps_p,
 		ret = quota_init(veid, g_p->res.fs.private, &g_p->res.dq);
 		break;
 #undef CHECK_DQ
+
+#ifdef HAVE_PLOOP
 	case ACTION_SNAPSHOT_CREATE:
 		ret = vzctl_env_create_snapshot(h, veid,
 				&g_p->res.fs, &cmd_p->snap);
@@ -1377,8 +1616,18 @@ int run_action(envid_t veid, act_t action, vps_param *g_p, vps_param *vps_p,
 				cmd_p->snap.guid);
 		break;
 	case ACTION_SNAPSHOT_LIST:
-		ret = vzctl_env_list_snapshot_tree(g_p->res.fs.private);
+		ret = vzctl_env_snapshot_list(argc, argv, veid,
+				g_p->res.fs.private);
 		break;
+	case ACTION_SNAPSHOT_MOUNT:
+		ret = vzctl_env_mount_snapshot(veid, g_p->res.fs.private,
+				cmd_p->snap.target, cmd_p->snap.guid);
+		break;
+	case ACTION_SNAPSHOT_UMOUNT:
+		ret = vzctl_env_umount_snapshot(veid, g_p->res.fs.private,
+				cmd_p->snap.guid);
+		break;
+#endif
 	case ACTION_CUSTOM:
 		ret = mod_setup(h, veid, 0, 0, &g_action, g_p);
 		break;

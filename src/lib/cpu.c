@@ -30,6 +30,7 @@
 #include "logger.h"
 #include "vzsyscalls.h"
 
+#ifdef VZ_KERNEL_SUPPORTED
 static inline int fairsched_chwt(unsigned int id, unsigned wght)
 {
 	int ret;
@@ -60,30 +61,46 @@ static inline int fairsched_vcpus(unsigned int id, unsigned vcpus)
 	return ret;
 }
 
-#if defined(__i386__) || defined(__x86_64__)
 static inline int fairsched_cpumask(unsigned int id,
 		unsigned int masksize, unsigned long *mask)
 {
-	int ret;
-
-	ret = syscall(__NR_fairsched_cpumask, id, masksize, mask);
-	if (ret && errno == ENOSYS)
-		ret = 0;
-	return ret;
-}
-#else
+	int ret = ENOTSUP;
 /*
  * fairsched_cpumask is available only in vz kernels based on linux 2.6.32
  * or later which do not support platforms different from x86.
  */
+#if defined(__i386__) || defined(__x86_64__)
+
+	ret = syscall(__NR_fairsched_cpumask, id, masksize, mask);
+	if (ret && errno == ENOSYS)
+		ret = 0;
+#endif
+	return ret;
+}
+#else /* ! VZ_KERNEL_SUPPORTED */
+static inline int fairsched_chwt(unsigned int id, unsigned wght)
+{
+	return ENOTSUP;
+}
+
+static inline int fairsched_rate(unsigned int id, int op, unsigned rate)
+{
+	return ENOTSUP;
+}
+
+static inline int fairsched_vcpus(unsigned int id, unsigned vcpus)
+{
+	return ENOTSUP;
+}
+
 static inline int fairsched_cpumask(unsigned int id,
 		unsigned int masksize, unsigned long *mask)
 {
 	return ENOTSUP;
 }
-#endif
+#endif /* VZ_KERNEL_SUPPORTED */
 
-static int set_cpulimit(envid_t veid, unsigned int cpulimit)
+int set_cpulimit(envid_t veid, unsigned int cpulimit)
 {
 	unsigned cpulim1024 = (float)cpulimit * 1024 / 100;
 	int op = cpulim1024 ? FAIRSCHED_SET_RATE : FAIRSCHED_DROP_RATE;
@@ -96,7 +113,7 @@ static int set_cpulimit(envid_t veid, unsigned int cpulimit)
 	return 0;
 }
 
-static int set_cpuweight(envid_t veid, unsigned int cpuweight)
+int set_cpuweight(envid_t veid, unsigned int cpuweight)
 {
 
 	if (fairsched_chwt(veid, cpuweight)) {
@@ -106,7 +123,7 @@ static int set_cpuweight(envid_t veid, unsigned int cpuweight)
 	return 0;
 }
 
-static int set_cpuunits(envid_t veid, unsigned int cpuunits)
+int set_cpuunits(envid_t veid, unsigned int cpuunits)
 {
 	int cpuweight, ret;
 
@@ -122,7 +139,7 @@ static int set_cpuunits(envid_t veid, unsigned int cpuunits)
 	return ret;
 }
 
-static int set_cpumask(envid_t veid, cpumask_t *mask)
+int set_cpumask(envid_t veid, cpumask_t *mask)
 {
 	static char maskstr[CPUMASK_NBITS * 2];
 
@@ -141,7 +158,7 @@ static int set_cpumask(envid_t veid, cpumask_t *mask)
  * @param veid		CT ID
  * @param vcpu		number of CPUs
  */
-static int env_set_vcpus(envid_t veid, unsigned int vcpus)
+int env_set_vcpus(envid_t veid, unsigned int vcpus)
 {
 	logger(0, 0, "Setting CPUs: %d", vcpus);
 	if (fairsched_vcpus(veid, vcpus) != 0) {
@@ -174,8 +191,6 @@ int hn_set_cpu(cpu_param *cpu)
  */
 int vps_set_cpu(vps_handler *h, envid_t veid, cpu_param *cpu)
 {
-	int ret = 0;
-
 	if (cpu->limit == NULL &&
 		cpu->units == NULL &&
 		cpu->weight == NULL &&
@@ -189,19 +204,6 @@ int vps_set_cpu(vps_handler *h, envid_t veid, cpu_param *cpu)
 			"container is not running");
 		return VZ_VE_NOT_RUNNING;
 	}
-	if (cpu->limit != NULL) {
-		ret = set_cpulimit(veid, *cpu->limit);
-	}
-	if (cpu->units != NULL) {
-		ret = set_cpuunits(veid, *cpu->units);
-	} else if (cpu->weight != NULL)
-		ret = set_cpuweight(veid, *cpu->weight);
-	if (cpu->vcpus != NULL) {
-		ret = env_set_vcpus(veid, *cpu->vcpus);
-	}
-	if (cpu->mask != NULL) {
-		ret = set_cpumask(veid, cpu->mask);
-	}
 
-	return ret;
+	return h->setcpus(h, veid, cpu);
 }

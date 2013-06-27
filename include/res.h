@@ -56,6 +56,8 @@ typedef struct {
 	int onboot;
 	unsigned long *bootorder;
 	int wait;
+	unsigned long *local_uid;
+	unsigned long *local_gid;
 } misc_param;
 
 struct mod_action;
@@ -140,7 +142,9 @@ struct vzctl_snapshot_param {
 	char *name;
 	char *desc;
 #define SNAPSHOT_SKIP_SUSPEND	1 << 1
+#define SNAPSHOT_SKIP_CONFIG	1 << 2
 	int flags;
+	char *target;	/* snapshot mount point */
 };
 
 struct vps_param {

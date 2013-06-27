@@ -19,49 +19,55 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/mount.h>
-#include <sys/vfs.h>
+#include <sys/stat.h>
 #include <errno.h>
 #include <stdio.h>
-#include <string.h>
+#include <limits.h>
 
 #include "types.h"
 #include "fs.h"
 #include "logger.h"
 #include "vzerror.h"
 
-/*  Check is fs mounted
- *  return: 1 - yes
- *	    0 - no
- *	  < 0 - error
+/* Check if CT private area is mounted
+ * Returns:
+ *   1: mounted
+ *   0: not mounted
+ *  -1: error getting status
  */
-int vz_fs_is_mounted(const char *root)
+int vps_is_mounted(const char *root, const char *private)
 {
-	FILE *fp;
-	char buf[512];
-	char mnt[512];
-	char *path;
-	int ret = 0;
+	struct stat st1, st2;
+	char parent[PATH_MAX];
 
-	if ((fp = fopen("/proc/mounts", "r")) == NULL) {
-		logger(-1, errno,  "unable to open /proc/mounts");
+	if (!root || !private)
+		return -1;
+
+	if (stat(root, &st1)) {
+		logger(-1, errno, "stat(%s)", root);
 		return -1;
 	}
-	path = realpath(root, NULL);
-	if (path == NULL)
-		path = strdup(root);
-	while (!feof(fp)) {
-		if (fgets(buf, sizeof(buf), fp) == NULL)
-			break;
-		if (sscanf(buf, "%*[^ ] %s ", mnt) != 1)
-			continue;
-		if (!strcmp(mnt, path)) {
-			ret = 1;
-			break;
-		}
+
+	snprintf(parent, sizeof(parent), "%s/..", root);
+	if (stat(parent, &st2)) {
+		logger(-1, errno, "stat(%s)", parent);
+		return -1;
 	}
-	free(path);
-	fclose(fp);
-	return ret;
+
+	/* Check for real mount (simfs or ploop) */
+	if (st1.st_dev != st2.st_dev)
+		return 1;
+
+	/* Check for bind mount (upstream case) */
+	if (stat(private, &st2)) {
+		/* return false when private area does not exist */
+		if (errno == ENOENT)
+			return 0;
+		logger(-1, errno, "stat(%s)", private);
+		return -1;
+	}
+
+	return (st1.st_dev == st2.st_dev) && (st1.st_ino == st2.st_ino);
 }
 
 static char *fs_name = "simfs";
@@ -70,14 +76,11 @@ const char *vz_fs_get_name()
 	return fs_name;
 }
 
-int vz_mount(fs_param *fs, int remount)
+int vz_mount(fs_param *fs, int flags)
 {
-	int mntopt = 0;
+	int mntopt = fs->flags | flags;
+	const int remount = flags & MS_REMOUNT;
 
-	if (fs->noatime == YES)
-		mntopt |= MS_NOATIME;
-	if (remount)
-		mntopt |= MS_REMOUNT;
 	logger(2, 0,  "Mounting root: %s %s", fs->root, fs->private);
 	if (mount(fs->private, fs->root, "simfs", mntopt,
 			remount ? "" : fs->private) < 0)

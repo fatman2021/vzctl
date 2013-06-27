@@ -24,6 +24,7 @@ Usage: vzubc [option ...] [<ctid> ...]
  -w, --watch:
      Run itself under watch(1) (a la top mode, Ctrl-C to exit).
      -wd: show differences between runs
+     -wt: do not show watch title
      -wn <time>: refresh every <time> seconds
  -q, --quiet:
      Quiet mode (only show beancounters with fails and close to limits).
@@ -73,15 +74,15 @@ while test $# -gt 0; do
 		watch=
 		;;
 	-w|--watch)
-		if ! which watch >/dev/null; then
-			echo "Error: watch binary not found" 1>&2
-			exit 1
-		fi
 		watch=yes
 		;;
 	-wd)
 		watch=yes
 		WATCH_ARGS="$WATCH_ARGS -d"
+		;;
+	-wt)
+		watch=yes
+		WATCH_ARGS="$WATCH_ARGS -t"
 		;;
 	-wn)
 		chk_zeroarg $1 $2
@@ -122,10 +123,6 @@ while test $# -gt 0; do
 		rm -f $STOREDIR/ubc.*.held
 		;;
 	-c|--color)
-		if ! test -z "$watch"; then
-			echo "Error: can't use --watch and --color together"
-			usage 1
-		fi
 		color=1
 		AWK_COLORS="-v c_h=$C_BRIGHT -v c_n=$C_NORMAL -v c_w=$C_WARNING -v c_e=$C_ERROR"
 		;;
@@ -153,6 +150,12 @@ while test $# -gt 0; do
 	esac
 	shift
 done
+
+# Sanity checks
+if test -n "$watch" -a -n "$color"; then
+	echo "Error: can't use --watch and --color together"
+	usage 1
+fi
 
 if test -n "$thr" -a -z "$color" -a -z "$quiet"; then
 	echo "Error: -qh and -qm only make sense with --quiet or --color"

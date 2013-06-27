@@ -36,6 +36,9 @@
 #include "util.h"
 #include "script.h"
 #include "fs.h"
+#include "dev.h"
+#include "exec.h"
+#include "cleanup.h"
 
 volatile sig_atomic_t alarm_flag;
 static char *envp_bash[] = {"HOME=/", "TERM=linux", ENV_PATH, NULL};
@@ -60,9 +63,9 @@ int read_script(const char *fname, char *include, char **buf)
 			snprintf(inc, p - fname + 2, "%s", fname);
 			strcat(inc, include);
 		} else {
-			snprintf(inc, sizeof(inc), "%s", include);
+			sprintf(inc, "%s", include);
 		}
-		if (stat_file(inc))
+		if (stat_file(inc) == 1)
 			len = read_script(inc, NULL, buf);
 		free(inc);
 		if (len < 0)
@@ -99,7 +102,7 @@ int read_script(const char *fname, char *include, char **buf)
 
 	return len;
 err:
-	if (fd > 0)
+	if (fd >= 0)
 		close(fd);
 	free(*buf);
 	return -1;
@@ -108,15 +111,14 @@ err:
 #define ENV_SIZE	256
 int run_script(const char *f, char *argv[], char *env[], int quiet)
 {
-	int child, pid, fd;
-	int status;
+	int child, fd;
 	int ret, i, j;
 	char *cmd;
 	struct sigaction act, actold;
-	int out[2];
 	char *envp[ENV_SIZE];
+	struct vzctl_cleanup_handler *ch;
 
-	if (!stat_file(f)) {
+	if (stat_file(f) != 1) {
 		logger(-1, 0, "File %s not found", f);
 		return VZ_NOSCRIPT;
 	}
@@ -130,11 +132,6 @@ int run_script(const char *f, char *argv[], char *env[], int quiet)
 	if (cmd != NULL) {
 		logger(2, 0, "Running: %s", cmd);
 		free(cmd);
-	}
-	if (quiet && pipe(out) < 0) {
-		logger(-1, errno, "run_script: unable to create pipe");
-		ret = VZ_RESOURCE_ERROR;
-		goto err;
 	}
 	i = 0;
 	for (i = 0; i < ENV_SIZE - 1 && envp_bash[i] != NULL; i++)
@@ -150,16 +147,9 @@ int run_script(const char *f, char *argv[], char *env[], int quiet)
 		else
 			dup2(fd, 0);
 
-		if (quiet) {
+		if (quiet && fd >= 0) {
 			dup2(fd, 1);
 			dup2(fd, 2);
-		} else {
-/*
-			dup2(out[1], STDOUT_FILENO);
-			dup2(out[1], STDERR_FILENO);
-			close(out[0]);
-			close(out[1]);
-*/
 		}
 		execve(f, argv, envp);
 		logger(-1, errno, "Error exec %s", f);
@@ -169,19 +159,10 @@ int run_script(const char *f, char *argv[], char *env[], int quiet)
 		ret = VZ_RESOURCE_ERROR;
 		goto err;
 	}
-	while ((pid = waitpid(child, &status, 0)) == -1)
-		if (errno != EINTR)
-			break;
-	ret = VZ_SYSTEM_ERROR;
-	if (pid == child) {
-		if (WIFEXITED(status))
-			ret = WEXITSTATUS(status);
-		else if (WIFSIGNALED(status))
-			logger(-1, 0, "Received signal:"
-					"  %d in %s", WTERMSIG(status), f);
-	} else {
-		logger(-1, errno, "Error in waitpid");
-	}
+	ch = add_cleanup_handler(cleanup_kill_process, &child);
+	ret = env_wait(child);
+	del_cleanup_handler(ch);
+
 err:
 	sigaction(SIGCHLD, &actold, NULL);
 
@@ -195,7 +176,7 @@ int run_pre_script(int veid, char *script)
 	char buf[STR_SIZE];
 	int ret;
 
-	if (!stat_file(script))
+	if (stat_file(script) != 1)
 		return 0;
 	/* cmd parameters */
 	arg[0] = script;
@@ -214,31 +195,6 @@ int run_pre_script(int veid, char *script)
 	return ret;
 }
 
-#define UDEV_DEVICES_DIR1	"/etc/udev/devices"
-static int mk_quota_dev(const char *name, dev_t dev)
-{
-	mode_t mode = S_IFBLK | S_IXGRP;
-	char fname[256];
-	const char *p;
-
-	unlink(name);
-	if (mknod(name, mode, dev))
-		logger(-1, errno, "Unable to create %s", name);
-
-	if (stat_file(UDEV_DEVICES_DIR1) != 1)
-		return 0;
-
-	if ((p = strrchr(name, '/')) == NULL)
-		p = name;
-
-	snprintf(fname, sizeof(fname), UDEV_DEVICES_DIR1 "/%s", p);
-	unlink(fname);
-	if (mknod(fname, mode, dev))
-		logger(-1, errno, "Unable to create %s", name);
-
-	return 0;
-}
-
 #define PROC_QUOTA	"/proc/vz/vzaquota/"
 #define QUOTA_U		"/aquota.user"
 #define QUOTA_G		"/aquota.group"
@@ -254,8 +210,7 @@ static int mk_vzquota_link()
 	}
 	fs = vz_fs_get_name();
 	/* make dev */
-	snprintf(buf, sizeof(buf), "/dev/%s", fs);
-	mk_quota_dev(buf, st.st_dev);
+	create_static_dev(NULL, fs, "root", S_IFBLK|S_IXGRP, st.st_dev);
 
 	snprintf(buf, sizeof(buf), PROC_QUOTA "%08lx" QUOTA_U,
 		(unsigned long)st.st_dev);
@@ -277,7 +232,8 @@ int setup_env_quota(const struct setup_env_quota_param *param)
 	if (param->dev_name[0] == '\0') /* simfs/vzquota */
 		return mk_vzquota_link();
 	/* ploop */
-	if (mk_quota_dev(param->dev_name, param->dev))
+	if (create_static_dev(NULL, param->dev_name, "root",
+				S_IFBLK|S_IXGRP, param->dev))
 		return -1;
 	return system("quotaon -a");
 }
@@ -319,7 +275,7 @@ int add_reach_runlevel_mark()
 {
 	int fd, found, ret;
 	ssize_t len, w;
-	char buf[4096];
+	char buf[4096 + 1];
 	struct stat st;
 
 	unlink(VZFIFO_FILE);
@@ -373,7 +329,7 @@ int add_reach_runlevel_mark()
 	ret = 0;
 	found = 0;
 	while (1) {
-		len = read(fd, buf, sizeof(buf));
+		len = read(fd, buf, sizeof(buf) - 1);
 		if (len == 0)
 			break;
 		if (len < 0) {
@@ -435,5 +391,7 @@ err:
 	alarm(0);
 	sigaction(SIGALRM, &actold, NULL);
 	unlink(VZFIFO_FILE);
+	if (fd >= 0)
+		close(fd);
 	return ret;
 }

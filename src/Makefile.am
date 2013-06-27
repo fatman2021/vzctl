@@ -1,4 +1,4 @@
-#  Copyright (C) 2000-2008, Parallels, Inc. All rights reserved.
+#  Copyright (C) 2000-2012, Parallels, Inc. All rights reserved.
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -19,23 +19,26 @@ include $(top_srcdir)/paths.am
 
 SUBDIRS = lib
 
-INCLUDES = -I$(top_srcdir)/include
-
-AM_CFLAGS = -DSBINDIR=\"$(sbindir)\" \
-            -DPKGCONFDIR=\"$(pkgconfdir)\" \
-            -DPKGLIBDIR=\"$(pkglibdir)\"
+AM_CPPFLAGS = -I$(top_srcdir)/include \
+              -I$(top_builddir)/include \
+              -DSBINDIR=\"$(sbindir)\" \
+              -DPKGCONFDIR=\"$(pkgconfdir)\" \
+              -DSCRIPTDIR=\"$(scriptdir)\" \
+              -DVZDIR=\"$(vzdir)\" \
+              -DMODULESDIR=\"$(modulesdir)\"
 
 sbin_PROGRAMS = arpsend \
                 ndsend \
                 vzcalc \
                 vzcfgvalidate \
+                vzcptcheck \
                 vzctl \
                 vzlist \
                 vzmemcheck \
                 vzsplit \
                 vzeventd
 
-VZCTL_LIBS = $(top_builddir)/src/lib/libvzctl.la
+VZCTL_LIBS = lib/libvzctl.la
 
 arpsend_SOURCES = arpsend.c
 
@@ -50,13 +53,16 @@ vzcfgvalidate_LDADD   = $(VZCTL_LIBS)
 
 vzctl_SOURCES = enter.c \
                 modules.c \
-                snapshot.c \
                 vzctl-actions.c \
                 vzctl.c
-vzctl_LDADD = $(VZCTL_LIBS) $(DL_LIBS) $(UTIL_LIBS) $(PLOOP_LIBS)
+if HAVE_PLOOP
+vzctl_SOURCES += snapshot.c snapshot-list.c
+endif
+
+vzctl_LDADD = $(VZCTL_LIBS) $(DL_LIBS) $(UTIL_LIBS)
 
 vzlist_SOURCES = vzlist.c
-vzlist_LDADD   = $(VZCTL_LIBS) $(PLOOP_LIBS)
+vzlist_LDADD   = $(VZCTL_LIBS)
 
 vzmemcheck_SOURCES = validate.c \
                      vzmemcheck.c

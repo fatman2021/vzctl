@@ -39,8 +39,6 @@
 static volatile sig_atomic_t alarm_flag, child_exited;
 static char *envp_bash[] = {"HOME=/", "TERM=linux", ENV_PATH, NULL};
 
-int vz_env_create_ioctl(vps_handler *h, envid_t veid, int flags);
-
 int execvep(const char *path, char *const argv[], char *const envp[])
 {
 	const char *p, *p2;
@@ -138,7 +136,7 @@ int env_wait(int pid)
 		}
 	} else {
 		ret = VZ_SYSTEM_ERROR;
-		logger(-1, errno, "Error in waitpid(%d)", ret);
+		logger(-1, errno, "Error in waitpid()");
 	}
 	return ret;
 }
@@ -186,7 +184,7 @@ static int vps_real_exec(vps_handler *h, envid_t veid, const char *root,
 	act.sa_flags = 0;
 	sigaction(SIGPIPE, &act, NULL);
 
-	if ((ret = vz_setluid(veid)))
+	if ((ret = h->setcontext(veid)))
 		return ret;
 	if ((pid = fork()) < 0) {
 		logger(-1, errno, "Unable to fork");
@@ -202,18 +200,9 @@ static int vps_real_exec(vps_handler *h, envid_t veid, const char *root,
 		close(in[1]); close(out[0]); close(err[0]);
 		close(st[0]);
 		fcntl(st[1], F_SETFD, FD_CLOEXEC);
-		if ((ret = vz_chroot(root)))
-			goto  env_err;
 		close_fds(0, st[1], h->vzfd, -1);
-		ret = vz_env_create_ioctl(h, veid, VE_ENTER);
-		if (ret < 0) {
-			if (errno == ESRCH)
-				ret = VZ_VE_NOT_RUNNING;
-			else
-				ret = VZ_ENVCREATE_ERROR;
+		if ((ret = h->enter(h, veid, root, 0)))
 			goto env_err;
-		}
-		close(h->vzfd);
 		if (exec_mode == MODE_EXEC && argv != NULL) {
 			execvep(argv[0], argv, envp);
 		} else {
@@ -358,24 +347,15 @@ static int _real_execFn(vps_handler *h, envid_t veid, const char *root,
 {
 	int ret, pid;
 
-	if ((ret = vz_setluid(veid)))
+	if ((ret = h->setcontext(veid)))
 		return ret;
 	if ((pid = fork()) < 0) {
 		logger(-1, errno, "Unable to fork");
 		return VZ_RESOURCE_ERROR;
 	} else if (pid == 0) {
-		if ((ret = vz_chroot(root)))
-			goto  env_err;
 		close_fds(1, h->vzfd, -1);
-		ret = vz_env_create_ioctl(h, veid, VE_ENTER | flags);
-		if (ret < 0) {
-			if (errno == ESRCH)
-				ret = VZ_VE_NOT_RUNNING;
-			else
-				ret = VZ_ENVCREATE_ERROR;
+		if ((ret = h->enter(h, veid, root, flags)))
 			goto env_err;
-		}
-		close(h->vzfd);
 		ret = fn(data);
 env_err:
 		exit(ret);
@@ -444,8 +424,9 @@ int vps_run_script(vps_handler *h, envid_t veid, char *script, vps_param *vps_p)
 	int ret, retry;
 	char *argv[2];
 	const char *root = vps_p->res.fs.root;
+	const char *private = vps_p->res.fs.private;
 
-	if (!stat_file(script))	{
+	if (stat_file(script) != 1) {
 		logger(-1, 0, "Script not found: %s", script);
 		return VZ_NOSCRIPT;
 	}
@@ -457,15 +438,16 @@ int vps_run_script(vps_handler *h, envid_t veid, char *script, vps_param *vps_p)
 		return VZ_VE_ROOT_NOTSET;
 	if (check_var(vps_p->res.fs.private, "VE_PRIVATE is not set"))
 		return VZ_VE_PRIVATE_NOTSET;
-	if (!stat_file(vps_p->res.fs.private)) {
+	if (stat_file(vps_p->res.fs.private) != 1) {
 		logger(-1, 0, "Container private area %s does not exist",
 			vps_p->res.fs.private);
 		return VZ_FS_NOPRVT;
 	}
 	if (!(is_run = vps_is_run(h, veid))) {
-		if ((ret = check_ub(&vps_p->res.ub)))
+		if ((ret = check_ub(h, &vps_p->res.ub)))
 			return ret;
-		if (!(is_mounted = vps_is_mounted(root))) {
+		is_mounted = vps_is_mounted(root, private);
+		if (is_mounted == 0) {
 			if ((ret = fsmount(veid, &vps_p->res.fs,
 				&vps_p->res.dq )))
 			{
@@ -488,7 +470,7 @@ int vps_run_script(vps_handler *h, envid_t veid, char *script, vps_param *vps_p)
 		retry = 0;
 		while (retry++ < 10 && vps_is_run(h, veid))
 			usleep(500000);
-		if (!is_mounted)
+		if (is_mounted == 0)
 			fsumount(veid, &vps_p->res.fs);
 	}
 	close(rd_p[0]);

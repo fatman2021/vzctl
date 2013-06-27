@@ -31,7 +31,7 @@
 
 #include "list.h"
 #include "logger.h"
-#include "config.h"
+#include "vzconfig.h"
 #include "vzerror.h"
 #include "util.h"
 #include "script.h"
@@ -40,9 +40,10 @@
 #include "create.h"
 #include "destroy.h"
 #include "image.h"
+#include "cleanup.h"
 
-#define VPS_CREATE	LIB_SCRIPTS_DIR "vps-create"
-#define VPS_DOWNLOAD	LIB_SCRIPTS_DIR "vps-download"
+#define VPS_CREATE	SCRIPTDIR "/vps-create"
+#define VPS_DOWNLOAD	SBINDIR "/vztmpl-dl"
 #define VZOSTEMPLATE	"/usr/bin/vzosname"
 
 static int vps_postcreate(envid_t veid, vps_res *res);
@@ -60,7 +61,7 @@ static char *get_ostemplate_name(char *ostmpl)
 		return NULL;
 	}
 	*buf = 0;
-	while((p = fgets(buf, sizeof(buf), fd)) != NULL);
+	while((fgets(buf, sizeof(buf), fd)) != NULL);
 	status = pclose(fd);
 	if (WEXITSTATUS(status) || *buf == 0) {
 		logger(-1, 0, "Unable to get full ostemplate name for %s",
@@ -90,34 +91,75 @@ static int download_template(char *tmpl)
 	return run_script(VPS_DOWNLOAD, arg, env, 0);
 }
 
-static int fs_create(envid_t veid, fs_param *fs, tmpl_param *tmpl,
-	dq_param *dq, int layout, int ploop_mode)
+struct destroy_ve {
+	envid_t veid;
+	char *private;
+};
+
+static void cleanup_destroy_ve(void *data)
+{
+	struct destroy_ve *d = data;
+
+	vps_destroy_dir(d->veid, d->private);
+}
+
+static void cleanup_umount_ploop(void *data)
+{
+	vzctl_umount_image((const char *)data);
+}
+
+static int fs_create(envid_t veid, vps_handler *h, vps_param *vps_p)
 {
 	char tarball[PATH_LEN];
 	char tmp_dir[PATH_LEN];
 	char buf[PATH_LEN];
 	int ret;
 	char *arg[2];
-	char *env[4];
+	char *env[6];
 	int quota = 0;
 	int i;
 	char *dst;
 	const char *ext[] = { "", ".gz", ".bz2", ".xz", NULL };
 	const char *errmsg_ext = "[.gz|.bz2|.xz]";
+	dq_param *dq = &vps_p->res.dq;
+	int layout = vps_p->opt.layout;
+	fs_param *fs = &vps_p->res.fs;
+	tmpl_param *tmpl = &vps_p->res.tmpl;
+	unsigned long uid_offset = 0;
+	unsigned long gid_offset = 0;
 	int ploop = (layout == VE_LAYOUT_PLOOP);
+	struct destroy_ve ddata;
+	struct vzctl_cleanup_handler *ch, *ploop_ch = NULL;
+
+	/*
+	 * All other users will test directly for h->can_join_userns.  Create
+	 * is special, because we still don't have the container config file
+	 * yet, and the user may be requesting it to be disabled in the command
+	 * line. So that value may be outdated.
+	 *
+	 * By now cmd_p is already merged into vps_p. So what we need to do is
+	 * just to test it again. We will force it to false if it is disabled
+	 * here, or keep the old value otherwise.
+	 */
+	if (!(vps_p->res.misc.local_uid) || (!(*vps_p->res.misc.local_uid)))
+		h->can_join_userns = 0;
+
+	if (h->can_join_userns && vps_p->res.misc.local_uid) {
+		uid_offset = *vps_p->res.misc.local_uid;
+		if (uid_offset && vps_p->res.misc.local_gid)
+			gid_offset = *vps_p->res.misc.local_gid;
+	}
 
 	if (ploop && (!dq->diskspace || dq->diskspace[1] <= 0)) {
 		logger(-1, 0, "Error: diskspace not set (required for ploop)");
 		return VZ_DISKSPACE_NOT_SET;
 	}
-	if (ploop && check_ploop_size(dq->diskspace[1]) < 0)
-		return VZ_DISKSPACE_NOT_SET;
 find:
 	for (i = 0; ext[i] != NULL; i++) {
 		snprintf(tarball, sizeof(tarball), "%s/cache/%s.tar%s",
 				fs->tmpl, tmpl->ostmpl, ext[i]);
 		logger(1, 0, "Looking for %s", tarball);
-		if (stat_file(tarball))
+		if (stat_file(tarball) == 1)
 			break;
 	}
 	if (ext[i] == NULL) {
@@ -131,7 +173,7 @@ find:
 	if (make_dir(fs->private, 0))
 		return VZ_FS_NEW_VE_PRVT;
 	snprintf(tmp_dir, sizeof(tmp_dir), "%s.tmp", fs->private);
-	if (stat_file(tmp_dir)) {
+	if (stat_file(tmp_dir) == 1) {
 		logger(-1, 0, "Warning: Temp dir %s already exists, deleting",
 			tmp_dir);
 		if (del_dir(tmp_dir)) {
@@ -145,10 +187,20 @@ find:
 		goto err;
 	}
 	dst = tmp_dir;
+
+	ddata.veid = veid;
+	ddata.private = dst;
+	ch = add_cleanup_handler(cleanup_destroy_ve, &ddata);
+
 	if (ploop) {
+#ifndef HAVE_PLOOP
+		ret = VZ_PLOOP_UNSUP;
+		goto err;
+#else
 		/* Create and mount ploop image */
 		struct vzctl_create_image_param param = {};
 		struct vzctl_mount_param mount_param = {};
+		int ploop_mode = vps_p->opt.mode;
 
 		if (ploop_mode < 0)
 			ploop_mode = PLOOP_EXPANDED_MODE;
@@ -168,7 +220,11 @@ find:
 		if (ret)
 			goto err;
 
+		/* If interrupted, umount ploop */
+		ploop_ch = add_cleanup_handler(cleanup_umount_ploop, &tmp_dir);
+
 		dst = fs->root;
+#endif
 	}
 	if (!ploop &&
 		dq != NULL &&
@@ -186,16 +242,26 @@ find:
 	arg[0] = VPS_CREATE;
 	arg[1] = NULL;
 	snprintf(buf, sizeof(buf), "PRIVATE_TEMPLATE=%s", tarball);
-	env[0] = strdup(buf);
+	i = 0;
+	env[i++] = strdup(buf);
 	snprintf(buf, sizeof(buf), "VE_PRVT=%s", dst);
-	env[1] = strdup(buf);
-	env[2] = strdup(ENV_PATH);
-	env[3] = NULL;
+	env[i++] = strdup(buf);
+	if (!is_vz_kernel(h) && h->can_join_userns) {
+		snprintf(buf, sizeof(buf), "UID_OFFSET=%lu", uid_offset);
+		env[i++] = strdup(buf);
+		snprintf(buf, sizeof(buf), "GID_OFFSET=%lu", gid_offset);
+		env[i++] = strdup(buf);
+	}
+	env[i++] = strdup(ENV_PATH);
+	env[i] = NULL;
 	logger(0, 0, "Creating container private area (%s)", tmpl->ostmpl);
 	ret = run_script(VPS_CREATE, arg, env, 0);
 	free_arg(env);
+#ifdef HAVE_PLOOP
 	if (ploop)
 		vzctl_umount_image(tmp_dir);
+	del_cleanup_handler(ploop_ch);
+#endif
 	if (ret)
 		goto err;
 	if (quota) {
@@ -207,6 +273,7 @@ find:
 	}
 	/* Unlock CT area */
 	rmdir(fs->private);
+	del_cleanup_handler(ch);
 	if (rename(tmp_dir, fs->private)) {
 		logger(-1, errno, "Can't rename %s to %s", tmp_dir, fs->private);
 		ret = VZ_FS_NEW_VE_PRVT;
@@ -223,6 +290,11 @@ err:
 	return ret;
 }
 
+static void cleanup_destroy_file(void *data)
+{
+	unlink(data);
+}
+
 int vps_create(vps_handler *h, envid_t veid, vps_param *vps_p, vps_param *cmd_p,
 	struct mod_action *action)
 {
@@ -235,16 +307,15 @@ int vps_create(vps_handler *h, envid_t veid, vps_param *vps_p, vps_param *cmd_p,
 	vps_param *conf_p;
 	int cfg_exists;
 	char *full_ostmpl;
+	struct vzctl_cleanup_handler *ch = NULL;
 
 	get_vps_conf_path(veid, dst, sizeof(dst));
 	sample_config = NULL;
-	cfg_exists = 0;
-	if (stat_file(dst))
-		cfg_exists = 1;
+	cfg_exists = (stat_file(dst) == 1);
 	if (cmd_p->opt.config != NULL) {
 		snprintf(src, sizeof(src),  VPS_CONF_DIR "ve-%s.conf-sample",
 			cmd_p->opt.config);
-		if (!stat_file(src)) {
+		if (stat_file(src) != 1) {
 			logger(-1, errno, "Sample config %s not found", src);
 			ret = VZ_CP_CONFIG;
 			goto err;
@@ -261,7 +332,7 @@ int vps_create(vps_handler *h, envid_t veid, vps_param *vps_p, vps_param *cmd_p,
 		snprintf(src, sizeof(src),  VPS_CONF_DIR "ve-%s.conf-sample",
 			vps_p->opt.config);
 		/* Bail out if CONFIGFILE is wrong in /etc/vz/vz.conf */
-		if (!stat_file(src)) {
+		if (stat_file(src) != 1) {
 			logger(-1, errno, "Sample config %s not found", src);
 			logger(-1, 0, "Fix the value of CONFIGFILE in "
 					GLOBAL_CFG);
@@ -281,6 +352,7 @@ int vps_create(vps_handler *h, envid_t veid, vps_param *vps_p, vps_param *cmd_p,
 		}
 	}
 	if (sample_config != NULL) {
+		ch = add_cleanup_handler(cleanup_destroy_file, &dst);
 		if (cp_file(dst, src))
 		{
 			ret = VZ_CP_CONFIG;
@@ -313,14 +385,13 @@ int vps_create(vps_handler *h, envid_t veid, vps_param *vps_p, vps_param *cmd_p,
 		ret = VZ_VE_ROOT_NOTSET;
 		goto err_cfg;
 	}
-	if (stat_file(fs->private)) {
+	if (dir_empty(fs->private) != 1) {
 		logger(-1, 0, "Private area already exists in %s", fs->private);
 		ret = VZ_FS_PRVT_AREA_EXIST;
 		goto err_cfg;
 	}
 	if (vps_p->opt.layout == VE_LAYOUT_PLOOP && !is_ploop_supported()) {
-		logger(-1, 0, "No ploop support in the kernel");
-		ret = VZ_BAD_KERNEL;
+		ret = VZ_PLOOP_UNSUP;
 		goto err_cfg;
 	}
 
@@ -347,16 +418,15 @@ int vps_create(vps_handler *h, envid_t veid, vps_param *vps_p, vps_param *cmd_p,
 			ret = VZ_VE_OSTEMPLATE_NOTSET;
 			goto err_cfg;
 		}
-		if (stat_file(VZOSTEMPLATE)) {
+		if (stat_file(VZOSTEMPLATE) == 1) {
 			full_ostmpl = get_ostemplate_name(tmpl->ostmpl);
 			if (full_ostmpl != NULL) {
 				free(tmpl->ostmpl);
 				tmpl->ostmpl = full_ostmpl;
 			}
 		}
-		if ((ret = fs_create(veid, fs, tmpl, &vps_p->res.dq,
-						vps_p->opt.layout,
-						vps_p->opt.mode)))
+		ret = fs_create(veid, h, vps_p);
+		if (ret)
 			goto err_root;
 	}
 
@@ -390,6 +460,7 @@ int vps_create(vps_handler *h, envid_t veid, vps_param *vps_p, vps_param *cmd_p,
 		goto err_names;
 	}
 
+	del_cleanup_handler(ch);
 	logger(0, 0, "Container private area was created");
 	return 0;
 

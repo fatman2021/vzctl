@@ -36,7 +36,8 @@ static struct distr_conf {
 	{"SET_DNS", SET_DNS},
 	{"SET_USERPASS", SET_USERPASS},
 	{"SET_UGID_QUOTA", SET_UGID_QUOTA},
-	{"POST_CREATE", POST_CREATE}
+	{"POST_CREATE", POST_CREATE},
+	{"PRE_START", PRE_START},
 };
 
 static int get_action_id(char *name)
@@ -60,7 +61,7 @@ static int add_dist_action(dist_actions *d_actions, char *name, char *action,
 	if ((id = get_action_id(name)) < 0)
 		return 0;
 	snprintf(file, sizeof(file), "%s/%s/%s", dir, DIST_SCRIPTS, action);
-	if (!stat_file(file)) {
+	if (stat_file(file) != 1) {
 		logger(-1, 0, "Action script %s not found", file);
 		return 0;
 	}
@@ -100,6 +101,12 @@ static int add_dist_action(dist_actions *d_actions, char *name, char *action,
 				break;
 			d_actions->post_create = strdup(file);
 			break;
+		case PRE_START:
+			if (d_actions->pre_start != NULL)
+				break;
+			d_actions->pre_start = strdup(file);
+			break;
+
 	}
 	return 0;
 }
@@ -115,6 +122,7 @@ void free_dist_actions(dist_actions *d_actions)
 	free(d_actions->set_userpass);
 	free(d_actions->set_ugid_quota);
 	free(d_actions->post_create);
+	free(d_actions->pre_start);
 }
 
 static int get_dist_conf_name(char *dist_name, char *dir, char *file, int len)
@@ -127,7 +135,7 @@ static int get_dist_conf_name(char *dist_name, char *dir, char *file, int len)
 		ep = buf + strlen(buf);
 		do {
 			snprintf(file, len, "%s/%s.conf", dir, buf);
-			if (stat_file(file))
+			if (stat_file(file) == 1)
 				return 0;
 			while (ep > buf && *ep !=  '-') --ep;
 			*ep = 0;
@@ -143,7 +151,7 @@ static int get_dist_conf_name(char *dist_name, char *dir, char *file, int len)
 			"in CT config, "
 			"using defaults from %s/%s", dir, DIST_CONF_DEF);
 	}
-	if (!stat_file(file)) {
+	if (stat_file(file) != 1) {
 		logger(-1, 0, "Distribution configuration file "
 			       "%s/%s not found", dir, file);
 		return VZ_NO_DISTR_CONF;

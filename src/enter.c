@@ -26,6 +26,7 @@
 #include <sys/stat.h>
 #include <string.h>
 #include <linux/vzcalluser.h>
+#include <linux/limits.h>
 #include <wait.h>
 #include <termios.h>
 #include <pty.h>
@@ -51,20 +52,29 @@ static struct termios s_tios;
 extern char *_proc_title;
 extern int _proc_title_len;
 
+static void set_proc_title(char *tty)
+{
+	char *p;
+
+	p = tty;
+	if (p != NULL && !strncmp(p, "/dev/", 5))
+		p += 5;
+	memset(_proc_title, 0, _proc_title_len);
+	snprintf(_proc_title, _proc_title_len - 1, "vzctl: %s",
+		p != NULL ? p : "");
+}
+
 static int pty_alloc(int *master, int *slave, struct termios *tios,
 	struct winsize *ws)
 {
-	char *name;
+	char name[PATH_MAX];
 
-	if (openpty(master, slave, NULL, tios, ws) < 0) {
+	if (openpty(master, slave, name, tios, ws) < 0) {
 		logger(-1, errno, "Unable to open pty");
 		return -1;
 	}
-	if ((name = ttyname(*slave)) == NULL) {
-		logger(-1, errno, "Unable to get tty name");
-	} else {
-		logger(2, 0, "Open %s", name);
-	}
+	set_proc_title(name);
+	logger(2, 0, "Open %s", name);
 	return 0;
 }
 
@@ -125,18 +135,6 @@ static void child_handler(int sig)
 static void winchange_handler(int sig)
 {
 	win_changed = 1;
-}
-
-static void set_proc_title(char *tty)
-{
-	char *p;
-
-	p = tty;
-	if (p != NULL && !strncmp(p, "/dev/", 5))
-		p += 5;
-	memset(_proc_title, 0, _proc_title_len);
-	snprintf(_proc_title, _proc_title_len - 1, "vzctl: %s",
-		p != NULL ? p : "");
 }
 
 static int stdredir(int rdfd, int wrfd)
@@ -258,7 +256,7 @@ int do_enter(vps_handler *h, envid_t veid, const char *root,
 		logger(-1, errno, "Unable to create pipe");
 		return VZ_RESOURCE_ERROR;
 	}
-	if ((ret = vz_setluid(veid)))
+	if ((ret = h->setcontext(veid)))
 		return ret;
 	preload_lib();
 	child_term = 0;
@@ -288,23 +286,13 @@ int do_enter(vps_handler *h, envid_t veid, const char *root,
 		tcgetattr(0, &tios);
 		close(in[1]); close(out[0]); close(st[0]); close(info[1]);
 		/* list of skipped fds -1 the end mark */
-		close_fds(1, in[0], out[1], st[1], h->vzfd, info[0], -1);
+		close_fds(1, in[0], out[1], st[1], info[0], h->vzfd, -1);
 		dup2(out[1], 1);
 		dup2(out[1], 2);
-		if ((ret = vz_chroot(root)))
+		if ((ret = h->enter(h, veid, root, 0)))
 			goto err;
-		ret = vz_env_create_ioctl(h, veid, VE_ENTER);
-		if (ret < 0) {
-			if (errno == ESRCH)
-				ret = VZ_VE_NOT_RUNNING;
-			else
-				ret = VZ_ENVCREATE_ERROR;
-			goto err;
-		}
-		close(h->vzfd);
 		if ((ret = pty_alloc(&master, &slave, &tios, &ws)))
 			goto err;
-		set_proc_title(ttyname(slave));
 		child_term = 0;
 		sigemptyset(&act.sa_mask);
 		act.sa_flags = SA_NOCLDSTOP;
@@ -442,12 +430,11 @@ static void sak(void)
 int do_console_attach(vps_handler *h, envid_t veid, int ttyno)
 {
 	struct vzctl_ve_configure c;
-	struct sigaction act;
-	int pid;
+	int pid, status;
 	char buf;
 	const char esc = 27;
 	const char enter = 13;
-	int after_enter = 0;
+	int new_line = 1;
 	int ret = VZ_SYSTEM_ERROR;
 
 	if (ttyno < 0) /* undef */
@@ -466,8 +453,6 @@ int do_console_attach(vps_handler *h, envid_t veid, int ttyno)
 		return VZ_SYSTEM_ERROR;
 	}
 
-	sigaction(SIGPIPE, &act, NULL);
-
 	signal(SIGCHLD, child_handler);
 	signal(SIGWINCH, console_winch);
 	console_winch(SIGWINCH);
@@ -479,11 +464,20 @@ int do_console_attach(vps_handler *h, envid_t veid, int ttyno)
 	}
 
 	if (pid == 0) {
+		char bigbuf[4096];
+		ssize_t nread;
 		while (1) {
-			if (read(tty, &buf, sizeof buf) <= 0)
-				err(1, "tty read error");
-			if (write(1, &buf, sizeof buf) <= 0)
-				err(1, "stdout write error");
+			if ((nread = read(tty, &bigbuf, sizeof bigbuf)) <= 0) {
+				if (errno == EINTR || errno == EAGAIN)
+					continue;
+				if (nread < 0)
+					err(1, "tty read error: %m");
+				exit(nread < 0 ? 2 : 0 );
+			}
+			if (write(1, &bigbuf, nread) < 0) {
+				err(1, "stdout write error: %m");
+				exit(3);
+			}
 		}
 		exit(0);
 	}
@@ -507,7 +501,7 @@ int do_console_attach(vps_handler *h, envid_t veid, int ttyno)
 
 	while (!child_term) {
 		TREAD(buf);
-		if (buf == esc && after_enter) {
+		if (buf == esc && new_line) {
 			TREAD(buf);
 			switch (buf) {
 				case '.':
@@ -521,12 +515,15 @@ int do_console_attach(vps_handler *h, envid_t veid, int ttyno)
 			}
 		}
 		TWRITE(buf);
-		after_enter = (buf == enter);
+		new_line = (buf == enter);
 	}
 out:
 	ret = 0;
 err:
 	kill(pid, SIGKILL);
+	while (waitpid(pid, &status, 0) == -1)
+		if (errno != EINTR)
+			break;
 	raw_off();
 	fprintf(stderr, "\nDetached from CT %d\n", veid);
 

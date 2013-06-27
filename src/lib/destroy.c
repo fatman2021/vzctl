@@ -30,7 +30,7 @@
 
 #include "list.h"
 #include "logger.h"
-#include "config.h"
+#include "vzconfig.h"
 #include "vzerror.h"
 #include "util.h"
 #include "script.h"
@@ -38,6 +38,7 @@
 #include "modules.h"
 #include "create.h"
 #include "env.h"
+#include "image.h"
 
 #define BACKUP		0
 #define DESTR		1
@@ -64,51 +65,20 @@ int vps_destroy_dir(envid_t veid, char *dir)
 {
 	int ret;
 
-	if (!quota_ctl(veid, QUOTA_STAT)) {
-		if ((ret = quota_off(veid, 0)))
-			if ((ret = quota_off(veid, 1)))
-				return ret;
+	logger(0, 0, "Destroying container private area: %s", dir);
+
+	if (!ve_private_is_ploop(dir)) {
+		if (!quota_ctl(veid, QUOTA_STAT))
+			if ((ret = quota_off(veid, 0)))
+				if ((ret = quota_off(veid, 1)))
+					return ret;
+		quota_ctl(veid, QUOTA_DROP);
 	}
-	quota_ctl(veid, QUOTA_DROP);
+
 	if ((ret = destroydir(dir)))
 		return ret;
+
 	return 0;
-}
-
-static char *get_destroy_root(const char *dir)
-{
-	struct stat st;
-	dev_t id;
-	int len;
-	const char *p, *prev;
-	char tmp[STR_SIZE];
-
-	if (stat(dir, &st) < 0)
-		return NULL;
-	id = st.st_dev;
-	p = dir + strlen(dir);
-	prev = p;
-	while (p > dir) {
-		while (p > dir && (*p == '/' || *p == '.')) p--;
-		while (p > dir && *p != '/') p--;
-		if (p <= dir)
-			break;
-		len = p - dir + 1;
-		strncpy(tmp, dir, len);
-		tmp[len] = 0;
-		if (stat(tmp, &st) < 0)
-			return NULL;
-		if (id != st.st_dev)
-			break;
-		prev = p;
-	}
-	len = prev - dir;
-	if (len) {
-		strncpy(tmp, dir, len);
-		tmp[len] = 0;
-		return strdup(tmp);
-	}
-	return NULL;
 }
 
 /* Removes all the directories under 'root'
@@ -180,7 +150,7 @@ static int destroydir(char *dir)
 		int i;
 		i = readlink(dir, tmp, sizeof(tmp) - 1);
 		if (i == -1) {
-			logger(-1, 0, "Unable to readlink %s", dir);
+			logger(-1, errno, "Unable to readlink %s", dir);
 			return -1;
 		}
 		tmp[i] = '\0';
@@ -198,14 +168,14 @@ static int destroydir(char *dir)
 		return _unlink(dir);
 	}
 
-	root = get_destroy_root(dir);
+	root = get_fs_root(dir);
 	if (root == NULL) {
 		logger(-1, 0, "Unable to get root for %s", dir);
 		return -1;
 	}
 	snprintf(tmp, sizeof(tmp), "%s/vztmp", root);
 	free(root);
-	if (!stat_file(tmp)) {
+	if (stat_file(tmp) != 1) {
 		if (mkdir(tmp, 0755)) {
 			logger(-1, errno, "Can't create tmp dir %s", tmp);
 			return VZ_FS_DEL_PRVT;
@@ -248,21 +218,8 @@ static int destroydir(char *dir)
 	sigaction(SIGCHLD, &act, NULL);
 
 	if (!(pid = fork())) {
-		int fd, i;
-
 		setsid();
-		fd = open("/dev/null", O_WRONLY);
-		if (fd != -1) {
-			close(0);
-			close(1);
-			close(2);
-			dup2(fd, 1);
-			dup2(fd, 2);
-		}
-		for (i = 3; i < 1024; i++) {
-			if (i != fd_lock)
-				close(i);
-		}
+		close_fds(1, fd_lock, -1);
 		_destroydir(tmp);
 		_unlock(fd_lock, buf);
 		exit(0);
@@ -272,18 +229,23 @@ static int destroydir(char *dir)
 	}
 	sleep(1);
 	sigaction(SIGCHLD, &actold, NULL);
+	_unlock(fd_lock, buf);
 	return ret;
 }
 
-static int destroy_dumpfile(envid_t veid, const char *dumpdir)
+int destroy_dump(envid_t veid, const char *dumpdir)
 {
 	char buf[128];
 
 	get_dump_file(veid, dumpdir, buf, sizeof(buf));
+
+	logger(1, 0, "Removing CT dump %s", buf);
 	if (unlink(buf) == 0)
 		return 0;
 	else if (errno == ENOENT)
 		return 0;
+	else if (errno == EISDIR)
+		return del_dir(buf);
 	else return -1;
 }
 
@@ -300,15 +262,14 @@ int vps_destroy(vps_handler *h, envid_t veid, fs_param *fs, cpt_param *cpt)
 			" Stop it first.");
 		return VZ_VE_RUNNING;
 	}
-	if (vps_is_mounted(fs->root)) {
+	if (vps_is_mounted(fs->root, fs->private) == 1) {
 		logger(0, 0, "Container is currently mounted (umount first)");
 		return VZ_FS_MOUNTED;
 	}
-	logger(0, 0, "Destroying container private area: %s", fs->private);
 	if ((ret = vps_destroy_dir(veid, fs->private)))
 		return ret;
 	move_config(veid, BACKUP);
-	if (destroy_dumpfile(veid, cpt != NULL ? cpt->dumpdir : NULL) < 0)
+	if (destroy_dump(veid, cpt != NULL ? cpt->dumpdir : NULL) < 0)
 		logger(-1, errno, "Warning: failed to remove dump file");
 	if (rmdir(fs->root) < 0)
 		logger(-1, errno, "Warning: failed to remove %s", fs->root);

@@ -35,11 +35,6 @@
 
 int vps_is_run(vps_handler *h, envid_t veid);
 
-int vps_is_mounted(const char *root)
-{
-	return vz_fs_is_mounted(root);
-}
-
 int fsmount(envid_t veid, fs_param *fs, dq_param *dq)
 {
 	int ret;
@@ -50,12 +45,23 @@ int fsmount(envid_t veid, fs_param *fs, dq_param *dq)
 		return VZ_FS_MPOINTCREATE;
 	}
 	if (ve_private_is_ploop(fs->private)) {
-		struct vzctl_mount_param param = {};
+		if (! is_ploop_supported())
+			return VZ_PLOOP_UNSUP;
+#ifdef HAVE_PLOOP
+		{
+			struct vzctl_mount_param param = {};
 
-		param.target = fs->root;
-		param.quota = is_2nd_level_quota_on(dq);
-
-		ret = vzctl_mount_image(fs->private, &param);
+			param.target = fs->root;
+			param.quota = is_2nd_level_quota_on(dq);
+			param.mount_data = fs->mount_opts;
+			ret = vzctl_mount_image(fs->private, &param);
+		}
+#else
+		/* Check for is_ploop_supported() above will log and return
+		 * an error. This part is for compiler to be happy.
+		 */
+		ret = VZ_PLOOP_UNSUP;
+#endif
 	}
 	else {
 		if ((ret = vps_quotaon(veid, fs->private, dq)))
@@ -65,6 +71,8 @@ int fsmount(envid_t veid, fs_param *fs, dq_param *dq)
 	}
 	return ret;
 }
+
+#define DELETED_STR	" (deleted)"
 
 static int umount_submounts(const char *root)
 {
@@ -87,8 +95,13 @@ static int umount_submounts(const char *root)
 	strcat(path, "/"); /* skip base mountpoint */
 	len = strlen(path);
 	while ((mnt = getmntent(fp)) != NULL) {
-		if (strncmp(path, mnt->mnt_dir, len) == 0)
-			add_str_param(&head, mnt->mnt_dir);
+		const char *p = mnt->mnt_dir;
+
+		if (strncmp(p, DELETED_STR, sizeof(DELETED_STR) - 1) == 0)
+			p += sizeof(DELETED_STR) - 1;
+
+		if (strncmp(path, p, len) == 0)
+			add_str_param(&head, p);
 	}
 	endmntent(fp);
 
@@ -106,15 +119,25 @@ int fsumount(envid_t veid, const fs_param *fs)
 {
 	umount_submounts(fs->root);
 
-	if (ve_private_is_ploop(fs->private))
+	if (ve_private_is_ploop(fs->private)) {
+		if (! is_ploop_supported())
+			return VZ_PLOOP_UNSUP;
+#ifdef HAVE_PLOOP
 		return vzctl_umount_image(fs->private);
+#else
+		/* Check for is_ploop_supported() above will log and return
+		 * an error. This part is for compiler to be happy.
+		 */
+		return VZ_PLOOP_UNSUP;
+#endif
+	}
 	/* simfs case */
 	if (umount(fs->root) != 0) {
 		logger(-1, errno, "Can't umount %s", fs->root);
 		return VZ_FS_CANTUMOUNT;
 	}
 
-	if (!quota_ctl(veid, QUOTA_STAT))
+	if (is_vzquota_available() && !quota_ctl(veid, QUOTA_STAT))
 		return quota_off(veid, 0);
 
 	return 0;
@@ -130,12 +153,7 @@ int vps_mount(vps_handler *h, envid_t veid, fs_param *fs, dq_param *dq,
 		return VZ_VE_ROOT_NOTSET;
 	if (check_var(fs->private, "VE_PRIVATE is not set"))
 		return VZ_VE_PRIVATE_NOTSET;
-	if (!stat_file(fs->private)) {
-		logger(-1, 0, "Container private area %s does not exist",
-				fs->private);
-		return VZ_FS_NOPRVT;
-	}
-	if (vps_is_mounted(fs->root)) {
+	if (vps_is_mounted(fs->root, fs->private) == 1) {
 		logger(-1, 0, "Container is already mounted");
 		return 0;
 	}
@@ -145,14 +163,21 @@ int vps_mount(vps_handler *h, envid_t veid, fs_param *fs, dq_param *dq,
 			PRE_MOUNT_PREFIX);
 		for (i = 0; i < 2; i++) {
 			if (run_pre_script(veid, buf)) {
-				logger(-1, 0, "Error executing mount script %s",
-					buf);
+				logger(-1, 0, "Error executing "
+						"premount script %s", buf);
 				return VZ_ACTIONSCRIPT_ERROR;
 			}
 			snprintf(buf, sizeof(buf), "%s%d.%s", VPS_CONF_DIR,
 				veid, PRE_MOUNT_PREFIX);
 		}
 	}
+
+	if (stat_file(fs->private) != 1) {
+		logger(-1, 0, "Container private area %s does not exist",
+				fs->private);
+		return VZ_FS_NOPRVT;
+	}
+
 	if ((ret = fsmount(veid, fs, dq)))
 		return ret;
 	/* Execute per-CT & global mount scripts */
@@ -181,7 +206,7 @@ int vps_umount(vps_handler *h, envid_t veid, const fs_param *fs,
 	char buf[PATH_LEN];
 	int ret, i;
 
-	if (!vps_is_mounted(fs->root)) {
+	if (vps_is_mounted(fs->root, fs->private) == 0) {
 		logger(-1, 0, "CT is not mounted");
 		return VZ_FS_NOT_MOUNTED;
 	}
@@ -209,8 +234,8 @@ int vps_umount(vps_handler *h, envid_t veid, const fs_param *fs,
 			veid, POST_UMOUNT_PREFIX);
 		for (i = 0; i < 2; i++) {
 			if (run_pre_script(veid, buf)) {
-				logger(-1, 0, "Error executing umount script %s",
-					buf);
+				logger(-1, 0, "Error executing "
+						"postumount script %s",	buf);
 				return VZ_ACTIONSCRIPT_ERROR;
 			}
 			snprintf(buf, sizeof(buf), "%svps.%s", VPS_CONF_DIR,
@@ -223,16 +248,17 @@ int vps_umount(vps_handler *h, envid_t veid, const fs_param *fs,
 
 int vps_set_fs(fs_param *g_fs, fs_param *fs)
 {
-	if (fs->noatime != YES)
-		return 0;
+	/* This function is currently unused */
+	return 0;
+
 	if (check_var(g_fs->root, "VE_ROOT is not set"))
 		return VZ_VE_ROOT_NOTSET;
 	if (check_var(g_fs->private, "VE_PRIVATE is not set"))
 		return VZ_VE_PRIVATE_NOTSET;
-	if (!vps_is_mounted(g_fs->root)) {
+	if (vps_is_mounted(g_fs->root, g_fs->private) == 0) {
 		logger(-1, 0, "Container is not mounted");
 		return VZ_FS_NOT_MOUNTED;
 	}
-	g_fs->noatime = fs->noatime;
-	return vz_mount(g_fs, 1);
+
+	return vz_mount(g_fs, MS_REMOUNT | fs->flags);
 }

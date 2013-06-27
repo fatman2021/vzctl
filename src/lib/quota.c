@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "types.h"
 #include "quota.h"
@@ -28,6 +29,11 @@
 #include "logger.h"
 
 #define VZQUOTA		"/usr/sbin/vzquota"
+
+int is_vzquota_available(void)
+{
+	return (access(VZQUOTA, X_OK) == 0);
+}
 
 void quota_inc(dq_param *param, int delta)
 {
@@ -208,8 +214,6 @@ int quota_on(envid_t veid, char *private, dq_param *param)
 	arg[i++] = strdup("on");
 	snprintf(buf, sizeof(buf), "%d", veid);
 	arg[i++] = strdup(buf);
-	arg[i++] = strdup("-r");
-	arg[i++] = strdup("0");
 	/* Disk space */
 	arg[i++] = strdup("-b");
 	snprintf(buf, sizeof(buf), "%lu", param->diskspace[0]);

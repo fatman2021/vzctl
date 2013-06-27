@@ -38,23 +38,25 @@
 
 /**  Data structure for file system parameter.
  */
-typedef struct {
+typedef struct fs_param {
 	char *private;		/**< CT private path. */
 	char *private_orig;	/**< original not expanded private path. */
 	char *root;		/**< CT root path. */
 	char *root_orig;	/**< original not expanded root path. */
 	char *tmpl;		/**< TEMPLATE path. */
-	int noatime;
+	char *mount_opts;	/**< additional mount options (for ploop) */
+	int flags;
 } fs_param;
 
 /** Get CT mount status.
  *
  * @param root		CT root.
+ * @param private	CT private.
  * @return		 1 - CT mounted
  *			 0 - CT unmounted.
  *			-1 - error
  */
-int vps_is_mounted(const char *root);
+int vps_is_mounted(const char *root, const char *private);
 
 /** Mount CT.
  *
@@ -98,8 +100,7 @@ int vps_umount(vps_handler *h, envid_t veid, const fs_param *fs,
 
 int vps_set_fs(fs_param *g_fs, fs_param *fs);
 
-extern const char *vz_fs_get_name();
-extern int vz_fs_is_mounted(const char *root);
-extern int vz_mount(fs_param *fs, int remount);
+const char *vz_fs_get_name();
+int vz_mount(fs_param *fs, int flags);
 
 #endif

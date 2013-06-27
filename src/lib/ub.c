@@ -33,11 +33,6 @@
 #include "vzsyscalls.h"
 #include "util.h"
 
-static inline int setublimit(uid_t uid, unsigned long resource,
-	const unsigned long *rlim)
-{
-	return syscall(__NR_setublimit, uid, resource, rlim);
-}
 
 static struct ubname2id {
 	char *name;
@@ -73,7 +68,7 @@ static struct ubname2id {
  * @param ub		UBC parameters.
  * @return		0 on success.
  */
-int check_ub(ub_param *ub)
+int check_ub(vps_handler *h, ub_param *ub)
 {
 	int ret = 0;
 
@@ -87,7 +82,7 @@ if (ub->name == NULL) {							\
 	{
 		CHECK_UB(physpages);
 		CHECK_UB(swappages);
-		if (!is_vswap_mode()) {
+		if (is_vz_kernel(h) && !is_vswap_mode()) {
 			logger(-1, 0, "Error: detected vswap CT config but "
 					"kernel does not support vswap");
 			logger(-1, 0, "This means either old kernel "
@@ -164,6 +159,13 @@ int get_ub_resid(char *name)
 	return -1;
 }
 
+#ifdef VZ_KERNEL_SUPPORTED
+static inline int setublimit(uid_t uid, unsigned long resource,
+	const unsigned long *rlim)
+{
+	return syscall(__NR_setublimit, uid, resource, rlim);
+}
+
 static const char *get_ub_name(unsigned int res_id)
 {
 	int i;
@@ -226,6 +228,7 @@ if (res != NULL) {							\
 
 	return 0;
 }
+#endif
 
 /** Apply UBC resources.
  *
@@ -245,7 +248,7 @@ int vps_set_ublimit(vps_handler *h, envid_t veid, ub_param *ub)
 			"container is not running");
 		return VZ_VE_NOT_RUNNING;
 	}
-	if ((ret = set_ublimit(h, veid, ub)))
+	if ((ret = h->setlimits(h, veid, ub)))
 		return ret;
 	logger(0, 0, "UB limits were set successfully");
 	return 0;
@@ -422,6 +425,7 @@ int vps_read_ubc(envid_t veid, ub_param *ub)
 	return !found;
 }
 
+/* If you want to modify this function, don't forget print_vswap() */
 int is_vswap_config(const ub_param *param)
 {
 	/* Dirty hack: treat INT_MAX (i.e. 32 bit LONG_MAX) as unlimited.

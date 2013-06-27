@@ -15,6 +15,8 @@
 #  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 #
 
+include $(top_srcdir)/paths.am
+
 SUBDIRS = bin \
           etc \
           man \
@@ -26,14 +28,11 @@ noinst_HEADERS = $(wildcard include/*.h) \
 
 EXTRA_DIST = vzctl.spec include/version.h.in
 
-vzdir       = /vz
 vzcachedir  = $(vzdir)/template/cache
 vzlockdir   = $(vzdir)/lock
 vzdumpdir   = $(vzdir)/dump
 vzprivdir   = $(vzdir)/private
 vzrootdir   = $(vzdir)/root
-veipdumpdir = $(localstatedir)/lib/vzctl/veip
-modulesdir  = $(pkglibdir)/modules
 
 install-data-local:
 	$(mkinstalldirs) $(DESTDIR)$(vzdir)
@@ -43,6 +42,8 @@ install-data-local:
 	$(mkinstalldirs) -m 700 $(DESTDIR)$(vzprivdir)
 	$(mkinstalldirs) -m 700 $(DESTDIR)$(vzrootdir)
 	$(mkinstalldirs) $(DESTDIR)$(veipdumpdir)
+	$(mkinstalldirs) $(DESTDIR)$(vzrebootdir)
+	$(mkinstalldirs) $(DESTDIR)$(vepiddir)
 	$(mkinstalldirs) $(DESTDIR)$(modulesdir)
 
 DISTRO_TARGETS = \
@@ -71,7 +72,7 @@ install-data-hook:
 	@echo "	Please invoke make with the target for your distribution!"
 	@echo "	*********************************************************"
 
-rpms: dist
+rpms: dist-bzip2
 	cp $(distdir).tar.bz2 `rpm --eval %_sourcedir`
 	rpmbuild -ba vzctl.spec
 

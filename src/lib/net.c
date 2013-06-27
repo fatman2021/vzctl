@@ -83,41 +83,8 @@ int merge_ip_list(int delall, list_head_t *old, list_head_t *add,
 	return __merge_str_list(delall, old, add, del, merged, find_ip);
 }
 
-static inline int _ip_ctl(vps_handler *h, envid_t veid, int op,
-			  unsigned int *ip, int family)
-{
-	struct vzctl_ve_ip_map ip_map;
-	union {
-		struct sockaddr_in  a4;
-		struct sockaddr_in6 a6;
-	} addr;
-
-	if (family == AF_INET) {
-		addr.a4.sin_family = AF_INET;
-		addr.a4.sin_addr.s_addr = ip[0];
-		addr.a4.sin_port = 0;
-		ip_map.addrlen = sizeof(addr.a4);
-	} else if (family == AF_INET6) {
-		addr.a6.sin6_family = AF_INET6;
-		memcpy(&addr.a6.sin6_addr, ip, 16);
-		addr.a6.sin6_port = 0;
-		ip_map.addrlen = sizeof(addr.a6);
-	} else {
-		return -EAFNOSUPPORT;
-	}
-
-	ip_map.veid = veid;
-	ip_map.op = op;
-	ip_map.addr = (struct sockaddr*) &addr;
-
-	return ioctl(h->vzfd, VENETCTL_VE_IP_MAP, &ip_map);
-}
-
 static int ip_ctl(vps_handler *h, envid_t veid, int op, char *str)
 {
-	int ret;
-	int family;
-	unsigned int ipaddr[4];
 	const char *ip, *mask;
 
 	mask = strchr(str, '/');
@@ -128,30 +95,8 @@ static int ip_ctl(vps_handler *h, envid_t veid, int op, char *str)
 	else {
 		ip = str;
 	}
-	if ((family = get_netaddr(ip, ipaddr)) < 0)
-		return 0;
-	ret = _ip_ctl(h, veid, op, ipaddr, family);
-	if (ret) {
-		switch (errno) {
-			case EADDRINUSE:
-				ret = VZ_IP_INUSE;
-				break;
-			case ESRCH:
-				ret = VZ_VE_NOT_RUNNING;
-				break;
-			case EADDRNOTAVAIL:
-				if (op == VE_IP_DEL)
-					return 0;
-				ret = VZ_IP_NA;
-				break;
-			default:
-				ret = VZ_CANT_ADDIP;
-				break;
-		}
-		logger(-1, errno, "Unable to %s IP %s",
-			op == VE_IP_ADD ? "add" : "del", ip);
-	}
-	return ret;
+
+	return h->ip_ctl(h, veid, op, ip);
 }
 
 int run_net_script(envid_t veid, int op, list_head_t *ip_h, int state,
@@ -270,18 +215,6 @@ static int vps_del_ip(vps_handler *h, envid_t veid,
 	return ret;
 }
 
-static int netdev_ctl(vps_handler *h, int veid, int op, char *name)
-{
-	struct vzctl_ve_netdev ve_netdev;
-
-	ve_netdev.veid = veid;
-	ve_netdev.op = op;
-	ve_netdev.dev_name = name;
-	if (ioctl(h->vzfd, VZCTL_VE_NETDEV, &ve_netdev) < 0)
-		return VZ_NETDEV_ERROR;
-	return 0;
-}
-
 static int set_netdev(vps_handler *h, envid_t veid, int cmd, net_param *net)
 {
 	int ret = 0;
@@ -291,7 +224,7 @@ static int set_netdev(vps_handler *h, envid_t veid, int cmd, net_param *net)
 	if (list_empty(dev_h))
 		return 0;
 	list_for_each(dev, dev_h, list) {
-		if ((ret = netdev_ctl(h, veid, cmd, dev->val))) {
+		if ((ret = h->netdev_ctl(h, veid, cmd, dev->val))) {
 			logger(-1, errno, "Unable to %s netdev %s",
 				(cmd == VE_NETDEV_ADD ) ? "add": "del",
 				dev->val);
@@ -323,7 +256,7 @@ int vps_set_netdev(vps_handler *h, envid_t veid, ub_param *ub,
 		return VZ_RESOURCE_ERROR;
 	} else if (pid1 == 0) {
 
-		if ((ret = vz_setluid(veid)))
+		if ((ret = h->setcontext(veid)))
 			exit(ret);
 		exit(set_netdev(h, veid, VE_NETDEV_ADD, net_add));
 	}

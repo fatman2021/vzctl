@@ -19,7 +19,7 @@
 # Adds IP address(es) in a container running SuSE.
 
 VENET_DEV=venet0
-IFCFG_DIR=/etc/sysconfig/network/
+IFCFG_DIR=/etc/sysconfig/network
 IFCFG=${IFCFG_DIR}/ifcfg-${VENET_DEV}
 ROUTES=${IFCFG_DIR}/ifroute-${VENET_DEV}
 HOSTFILE=/etc/hosts
@@ -57,10 +57,15 @@ IPADDR=127.0.0.1" > ${IFCFG} ||
 	if [ ! -f ${HOSTFILE} ]; then
 		echo "127.0.0.1 localhost.localdomain localhost" > $HOSTFILE
 	fi
-	cat << EOF > ${ROUTES}
+	# Set default route to venet0 only if there are IPs
+	# and there is no other default route
+	rm -f ${ROUTES}
+	if [ -n "${IP_ADDR}" ] && ! grep -qw ^default ${IFCFG_DIR}/ifroute-*; then
+		cat << EOF > ${ROUTES}
 default - - ${VENET_DEV}
 default :: - ${VENET_DEV}
 EOF
+	fi
 	fix_ifup_route
 }
 
@@ -81,7 +86,11 @@ function add_ip()
 	local found
 
 	if [ "x${VE_STATE}" = "xstarting" ]; then
-		init_config
+		if [ -n "${IP_ADDR}" ]; then
+			init_config
+		elif [ -f ${IFCFG} ] && grep -q "^IPADDR_" ${IFCFG}; then
+			init_config
+		fi
 	elif [ "x${IPDELALL}" = "xyes" ]; then
 		init_config
 	elif [ ! -f "${IFCFG}" ]; then

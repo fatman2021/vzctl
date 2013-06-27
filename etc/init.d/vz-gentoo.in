@@ -17,8 +17,10 @@ check_config() {
 	: ${VZVEINFO:=/proc/vz/veinfo}
 	: ${VESTAT:=/proc/vz/vestat}
 	: ${VPSCONFDIR:=@VPSCONFDIR@}
+	: ${VZREBOOTDIR:=@VZREBOOTDIR@}
 	: ${VZDEV:=venet0}
 	: ${VZCONF:=@PKGCONFDIR@/vz.conf}
+	: ${VE_STOP_MODE:=suspend}
 
 	if [ "${MODULES_DISABLED}" != "yes" ]; then
 		: ${IPTABLES_MODULES:="${IPTABLES}"}
@@ -75,7 +77,7 @@ setup_ve0() {
 	test -f ${ve0conf} || return
 	egrep -q '^ONBOOT=yes\|^ONBOOT=\"yes\"' ${ve0conf} || return
 
-	ebegin "Configuring hardware node UB resources: "
+	ebegin "Configuring hardware node UB resources"
 	msg=$(${VZCTL} set 0 --reset_ub 2>&1)
 	eend $? ${msg}
 }
@@ -85,7 +87,7 @@ start_net() {
 
 	# load necessary modules
 	for mod in ${NET_MODULES}; do
-		/sbin/modprobe ${mod} 2>/dev/null
+		modprobe ${mod} 2>/dev/null
 	done
 
 	if [ ! -f ${VZVEINFO} ]; then
@@ -93,22 +95,22 @@ start_net() {
 	fi
 
 	# we don't operate on a running interface
-	if /sbin/ip addr list | grep -q "venet0:.*UP" 2>/dev/null; then
+	if ip addr list | grep -q "venet0:.*UP" 2>/dev/null; then
 		return 0
 	fi
 
 	# configure the device
 	ebegin "Bringing up interface ${VZDEV}"
-		/sbin/ip link set ${VZDEV} up
+		ip link set ${VZDEV} up
 	eend $?
 
-	/sbin/ip addr add 0.0.0.0/0 dev ${VZDEV}
+	ip addr add 0.0.0.0/0 dev ${VZDEV}
 
 	ebegin "Configuring interface ${VZDEV}"
-		/sbin/sysctl -q -w net.ipv4.conf.${VZDEV}.send_redirects=0
+		sysctl -q -w net.ipv4.conf.${VZDEV}.send_redirects=0
 	eend $?
 
-	if [ "x$(/sbin/sysctl -n -e net.ipv4.ip_forward)" != "x1" ]; then
+	if [ "x$(sysctl -n -e net.ipv4.ip_forward)" != "x1" ]; then
 		ewarn "It looks like you have ip forwarding disabled. To make networking"
 		ewarn "available for containers, please, run sysctl -w net.ipv4.ip_forward=1"
 	fi
@@ -117,26 +119,34 @@ start_net() {
 stop_net() {
 	local mod
 
-	if /sbin/ip addr list | grep -q "venet0:.*UP" 2>/dev/null; then
+	if ip addr list | grep -q "venet0:.*UP" 2>/dev/null; then
 		ebegin "Bringing down interface ${VZDEV}"
-			/sbin/ip link set ${VZDEV} down 2>/dev/null
+			ip link set ${VZDEV} down 2>/dev/null
 		eend $?
 	fi
 
 	# remove all modules we probably loaded on start_net
 	for mod in ${NET_MODULES}; do
-		/sbin/modprobe -r ${mod} > /dev/null 2>&1
+		modprobe -r ${mod} > /dev/null 2>&1
 	done
 }
 
 start_ve() {
 	local veid velist msg need_restart=""
 
-	# get all containers we should start on boot
-	velist=$(vzlist -aH -octid,onboot -s-bootorder |
-		awk '$2 == "yes" {print $1}')
+	# CTs that were running before a reboot
+	velist=$(ls $VZREBOOTDIR)
+	rm -f $VZREBOOTDIR/*
+	# ... and not have ONBOOT=no
+	test -n "$velist" && velist=$(vzlist -aH -octid,onboot $velist |
+			awk '$2 != "no" {print $1}')
+	# ... plus ones with ONBOOT=yes
+	velist=$(echo "$velist"; vzlist -aH -octid,onboot |
+			awk '$2 == "yes" {print $1}')
+	# Then sort by bootorder
+	test -n "$velist" && velist=$(vzlist -aH -octid -s-bootorder $velist)
 
-	/sbin/sysctl -q -w net.ipv4.route.src_check=0
+	sysctl -q -w net.ipv4.route.src_check=0
 
 	for veid in ${velist}; do
 		ebegin "Starting CT ${veid}"
@@ -149,6 +159,7 @@ start_ve() {
 				fi
 			fi
 		fi
+		rm -f $VZREBOOTDIR/$veid
 		msg=$(${VZCTL} start ${veid} 2>&1)
 		eend $? "${msg}"
 	done
@@ -177,20 +188,44 @@ END { print num * 4; }' /proc/cpuinfo`
 }
 
 stop_ve() {
-	local veid velist msg m mounts fail i iter pid pids quota
+	local veid velist i iter pid pids stage stages msg
 
-	if [ -f ${VESTAT} ]; then
-		get_parallel
+	if [ ! -f ${VESTAT} ]; then
+		return
+	fi
+
+	# Pre-stop stage
+	rm -f $VZREBOOTDIR/*
+	velist=$(vzlist -1 2>/dev/null)
+	for veid in $velist; do
+		# Equalize cpuunits for all CTs
+		$VZCTL set $veid --cpuunits 2000 >/dev/null 2>&1
+		# Save to vzreboot list
+		touch $VZREBOOTDIR/$veid
+	done
+	get_parallel
+	stages="stop"
+	[ "$VE_STOP_MODE" = "suspend" ] && stages="suspend stop"
+	for stage in $stages; do
+		case $stage in
+			suspend)
+				msg='Suspending CT'
+				;;
+			stop)
+				msg='Shutting down CT'
+				;;
+		esac
 		for ((i = 0; i <= 2; i++)); do
 			iter=0
 			pids=
-			velist=$(awk '$1 != "VEID" && $1 != "Version:" {print $1}' ${VESTAT})
+			velist=$(vzlist -H -o ctid -sbootorder 2>/dev/null)
 			for veid in ${velist}; do
-				ebegin "Shutting down CT $veid"
-				# Set fairsched parameters to maximum so
-				# CT will stop fast
-				${VZCTL} set ${veid} --cpuunits 2000 --cpulimit 0 >/dev/null 2>&1
-				${VZCTL} --skiplock stop ${veid} >/dev/null 2>&1 &
+				ebegin "$msg $veid"
+				if [ "$stage" = "stop" ]; then
+					# Unset cpulimit for CT to stop fast
+					$VZCTL set $veid --cpulimit 0 >/dev/null 2>&1
+				fi
+				${VZCTL} --skiplock $stage ${veid} >/dev/null 2>&1 &
 				pids="${pids} $!"
 				let iter++
 				if [ ${iter} -gt ${PARALLEL} ]; then
@@ -206,10 +241,13 @@ stop_ve() {
 				wait ${pid}
 			done
 		done
-	fi
+	done
+}
 
-	iter=0
-	fail=1
+umount_ve() {
+	local iter=0
+	local fail=1
+	local m mounts msg quota
 
 	while [ ${iter} -lt 5 -a ${fail} -ne 0 ]; do
 		fail=0
@@ -264,16 +302,16 @@ start() {
 
 	ebegin "Loading OpenVZ modules"
 	for mod in ${IPTABLES_MODULES}; do
-		/sbin/modprobe ${mod} >/dev/null 2>&1
+		modprobe ${mod} >/dev/null 2>&1
 	done
 
 	for mod in ${PRELOAD_MODULES}; do
-		/sbin/modprobe -r ${mod} >/dev/null 2>&1
-		/sbin/modprobe ${mod} >/dev/null 2>&1
+		modprobe -r ${mod} >/dev/null 2>&1
+		modprobe ${mod} >/dev/null 2>&1
 	done
 
 	for mod in ${MODULES}; do
-		/sbin/modprobe ${mod} >/dev/null 2>&1
+		modprobe ${mod} >/dev/null 2>&1
 		rc=$?
 		if [ ${rc} -ne 0 ]; then
 			eend ${rc} "failed to load module ${mod}"
@@ -282,7 +320,7 @@ start() {
 	done
 
 	for mod in ${MIGRATE_MODULES} ${PLOOP_MODULES}; do
-		/sbin/modprobe ${mod} >/dev/null 2>&1
+		modprobe ${mod} >/dev/null 2>&1
 	done
 	eend
 
@@ -295,10 +333,18 @@ start() {
 		return 1
 	fi
 
+	if [ -f /proc/vz/oom_score_adj ]; then
+		ebegin "Applying OOM adjustments"
+		cat /etc/vz/oom-groups.conf > /proc/vz/oom_score_adj
+		eend $?
+	fi
+
 	start_net
 	setup_ve0
 	modify_vzconf
 	start_ve
+	# Try to run vzstats to submit new kernel info
+	vzstats >/dev/null 2>&1
 }
 
 stop() {
@@ -316,19 +362,20 @@ stop() {
 	local mod
 
 	stop_ve
+	umount_ve
 	umount_cgroups
 	stop_net
 
 	for mod in ${MIGRATE_MODULES} ${PLOOP_MODULES}; do
-		/sbin/modprobe -r ${mod} > /dev/null 2>&1
+		modprobe -r ${mod} > /dev/null 2>&1
 	done
 
 	for mod in ${MODULES}; do
-		/sbin/modprobe -r ${mod} > /dev/null 2>&1
+		modprobe -r ${mod} > /dev/null 2>&1
 	done
 
 	for mod in ${PRELOAD_MODULES}; do
-		/sbin/modprobe -r ${mod} > /dev/null 2>&1
+		modprobe -r ${mod} > /dev/null 2>&1
 	done
 
 	# Even if some modules failed to unload (say they were not loaded)

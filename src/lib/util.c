@@ -15,9 +15,6 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
 #include <stdlib.h>
 #include <stdio.h>
 #include <sys/types.h>
@@ -41,15 +38,14 @@
 #define NR_OPEN 1024
 #endif
 
-static const char *unescapestr(char *src)
+static const char *unescapestr(char *const src)
 {
 	char *p1, *p2;
 	int fl;
 
 	if (src == NULL)
 		return NULL;
-	p2 = src;
-	p1 = p2;
+	p1 = p2 = src;
 	fl = 0;
 	while (*p2) {
 		if (*p2 == '\\' && !fl)	{
@@ -104,21 +100,56 @@ char *parse_line(char *str, char *ltoken, int lsz, char **err)
 	return ret;
 }
 
-/*
-	1 - exist
-	0 - does't exist
-	-1 - error
-*/
+/** Check if given file exists
+ * Returns:
+ *  1 - file exists
+ *  0 - file does not exist
+ * -1 - some system error
+ */
 int stat_file(const char *file)
 {
-	struct stat st;
-
-	if (stat(file, &st)) {
-		if (errno != ENOENT)
-			return -1;
+	if (access(file, F_OK) == 0)
+		return 1;
+	if (errno == ENOENT)
 		return 0;
+
+	logger(-1, errno, "Can't access file %s", file);
+	return -1;
+}
+
+/** Check if a directory is empty
+ * Returns:
+ *  1 - empty or nonexistent
+ *  0 - not empty
+ * -1 - error
+ */
+int dir_empty(const char *dir)
+{
+	DIR *dp;
+	struct dirent *ep;
+	int ret = 1;
+
+	dp = opendir(dir);
+	if (dp == NULL) {
+		if (errno == ENOENT)
+			return 1;
+
+		logger(-1, errno, "Can't opendir %s", dir);
+		return -1;
 	}
-	return 1;
+
+	while ((ep = readdir(dp))) {
+		if (!strcmp(ep->d_name, "."))
+			continue;
+		if (!strcmp(ep->d_name, ".."))
+			continue;
+		/* Not empty */
+		ret = 0;
+		break;
+	}
+	closedir(dp);
+
+	return ret;
 }
 
 int make_dir_mode(const char *path, int full, int mode)
@@ -135,7 +166,7 @@ int make_dir_mode(const char *path, int full, int mode)
 		len = p - path + 1;
 		snprintf(buf, len, "%s", path);
 		ps = p + 1;
-		if (!stat_file(buf)) {
+		if (stat_file(buf) != 1) {
 			if (mkdir(buf, mode)) {
 				logger(-1, errno, "Can't create directory %s",
 					buf);
@@ -145,7 +176,7 @@ int make_dir_mode(const char *path, int full, int mode)
 	}
 	if (!full)
 		return 0;
-	if (!stat_file(path)) {
+	if (stat_file(path) != 1) {
 		if (mkdir(path, mode)) {
 			logger(-1, errno, "Can't create directory %s", path);
 			return 1;
@@ -157,6 +188,47 @@ int make_dir_mode(const char *path, int full, int mode)
 int make_dir(const char *path, int full)
 {
 	return make_dir_mode(path, full, 0755);
+}
+
+char *get_fs_root(const char *dir)
+{
+	struct stat st;
+	dev_t id;
+	size_t len;
+	const char *p, *prev;
+	char tmp[PATH_MAX];
+
+	if (stat(dir, &st) < 0)
+		return NULL;
+	id = st.st_dev;
+	len = strlen(dir);
+	if (len > sizeof(tmp) - 1) {
+		errno = ERANGE;
+		return NULL;
+	}
+	p = dir + len;
+	prev = p;
+	while (p > dir) {
+		while (p > dir && *p == '/') p--;
+		while (p > dir && *p != '/') p--;
+		if (p <= dir)
+			break;
+		len = p - dir + 1;
+		strncpy(tmp, dir, len);
+		tmp[len] = 0;
+		if (stat(tmp, &st) < 0)
+			return NULL;
+		if (id != st.st_dev)
+			break;
+		prev = p;
+	}
+	len = prev - dir;
+	if (len) {
+		strncpy(tmp, dir, len);
+		tmp[len] = 0;
+		return strdup(tmp);
+	}
+	return NULL;
 }
 
 int parse_int(const char *str, int *val)
@@ -211,7 +283,7 @@ int cp_file(char *dst, char *src)
 		logger(-1, errno, "Unable to open %s", src);
 		return -1;
 	}
-	if ((fd_dst = open(dst, O_CREAT|O_RDWR, st.st_mode)) < 0) {
+	if ((fd_dst = open(dst, O_CREAT|O_TRUNC|O_RDWR, st.st_mode)) < 0) {
 		logger(-1, errno, "Unable to open %s", dst);
 		close(fd_src);
 		return -1;
@@ -379,7 +451,7 @@ char *subst_VEID(envid_t veid, char *src)
 	sp = str;
 	se = str + sizeof(str);
 	len = srcp - src; /* Length of src before $VEID */
-	if (len > sizeof(str))
+	if (len >= sizeof(str))
 		return NULL;
 	memcpy(str, src, len);
 	sp += len;
@@ -396,7 +468,7 @@ char *subst_VEID(envid_t veid, char *src)
 	return strdup(str);
 }
 
-int get_pagesize()
+int get_pagesize(void)
 {
 	long pagesize;
 
@@ -463,18 +535,19 @@ int get_swap(unsigned long long *swap)
 	return -1;
 }
 
-int get_num_cpu()
+int get_num_cpu(void)
 {
 	FILE *fd;
 	char str[128];
 	int ncpu = 0;
 
-	if ((fd = fopen("/proc/cpuinfo", "r")) == NULL)	{
-		logger(-1, errno, "Cannot open /proc/cpuinfo");
+	if ((fd = fopen(PROCCPU, "r")) == NULL)	{
+		logger(-1, errno, "Cannot open " PROCCPU);
 		return 1;
 	}
 	while (fgets(str, sizeof(str), fd)) {
-		if (!strncmp(str, "processor", 9))
+		char const proc_ptrn[] = "processor";
+		if (!strncmp(str, proc_ptrn, sizeof(proc_ptrn) - 1))
 			ncpu++;
 	}
 	fclose(fd);
@@ -513,6 +586,11 @@ int get_dump_file(unsigned veid, const char *dumpdir, char *buf, int size)
 			dumpdir != NULL ? dumpdir : DEF_DUMPDIR, veid);
 }
 
+int get_state_file(unsigned veid, char *buf, int size)
+{
+	return snprintf(buf, size, "%s/%d", VEPIDDIR, veid);
+}
+
 int set_not_blk(int fd)
 {
 	int oldfl, ret;
@@ -527,7 +605,7 @@ int set_not_blk(int fd)
 
 /** Close all fd.
  * @param close_std	flag for closing the [0-2] fds
- * @param ...		list of fds are skiped, (-1 is the end mark)
+ * @param ...		list of fds to skip (-1 is the end mark)
 */
 void close_fds(int close_std, ...)
 {
@@ -543,11 +621,12 @@ void close_fds(int close_std, ...)
 		fd = open("/dev/null", O_RDWR);
 		if (fd != -1) {
 			dup2(fd, 0); dup2(fd, 1); dup2(fd, 2);
+			close(fd);
 		} else {
 			close(0); close(1); close(2);
 		}
 	}
-	/* build aray of skiped fds */
+	/* build array of skipped fds */
 	va_start(ap, close_std);
 	skip_fds[0] = -1;
 	for (i = 0; i < ARRAY_SIZE(skip_fds); i++) {
@@ -597,7 +676,6 @@ void remove_names(envid_t veid)
 	struct stat st;
 	struct dirent *ep;
 	DIR *dp;
-	char *p;
 	int r;
 	envid_t id;
 
@@ -613,9 +691,7 @@ void remove_names(envid_t veid)
 		if (r < 0)
 			continue;
 		content[r] = 0;
-		if ((p = strrchr(content, '/')) != NULL)
-			p++;
-		if (sscanf(p, "%d.conf", &id) == 1 && veid == id)
+		if (sscanf(basename(content), "%d.conf", &id) == 1 && veid == id)
 			unlink(buf);
 	}
 	closedir(dp);
@@ -721,4 +797,45 @@ const char* ubcstr(unsigned long bar, unsigned long lim)
 int is_vswap_mode(void)
 {
 	return (access("/proc/vz/vswap", F_OK) == 0);
+}
+
+#define UUID_LEN 36
+/* Check for valid GUID, add curly brackets if necessary:
+ *	fbcdf284-5345-416b-a589-7b5fcaa87673 ->
+ *	{fbcdf284-5345-416b-a589-7b5fcaa87673}
+ */
+int vzctl_get_normalized_guid(const char *str, char *buf, int len)
+{
+	int i;
+	const char *in;
+	char *out;
+
+	 if (len < UUID_LEN + 3)
+		 return -1;
+
+	in = (str[0] == '{') ? str + 1 : str;
+	buf[0] = '{';
+	out = buf + 1;
+
+	for (i = 0; i < UUID_LEN; i++) {
+		if (in[i] == '\0')
+			break;
+		if ((i == 8) || (i == 13) || (i == 18) || (i == 23)) {
+			if (in[i] != '-' )
+				break;
+		} else if (!isxdigit(in[i])) {
+			break;
+		}
+		out[i] = in[i];
+	}
+	if (i < UUID_LEN)
+		return 1;
+	if (in[UUID_LEN] != '\0' &&
+			(in[UUID_LEN] != '}' || in[UUID_LEN + 1] != '\0'))
+		return 1;
+
+	out[UUID_LEN] = '}';
+	out[UUID_LEN+1] = '\0';
+
+	return 0;
 }

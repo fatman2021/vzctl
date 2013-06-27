@@ -1,4 +1,4 @@
-.TH ctid.conf 5 "16 Nov 2010" "OpenVZ" "Containers"
+.TH ctid.conf 5 "13 May 2013" "OpenVZ" "Containers"
 .SH NAME
 \fIctid\fR.conf \- configuration file for an OpenVZ container.
 .SH SYNOPSIS
@@ -27,8 +27,6 @@ Corresponds to the \fB--name\fR option.
 Corresponds to the \fB--description\fR option.
 .IP \fBONBOOT\fR="\fByes\fR|\fBno\fR"
 Specifies whether this container will be started during system boot.
-Default is \fBno\fR, meaning the container will not be started
-if \fBONBOOT\fR parameter is omitted.
 Corresponds to the \fB--onboot\fR option.
 .IP \fBBOOTORDER\fR="\fInumber\fR"
 Specifies the CT boot order priority. Corresponds to the
@@ -39,6 +37,8 @@ Corresponds to the \fB--ostemplate\fR option.
 Corresponds to the \fB--root\fR option.
 .IP \fBVE_PRIVATE\fR="\fIdirectory\fR"
 Corresponds to the \fB--private\fR option.
+.IP \fBMOUNT_OPTS\fR="\fIoption\fR[,\fIoption\fR...]"
+Corresponds to \fB--mount_opts\fR option.
 .IP \fBDISABLED\fR="\fByes\fR|\fBno\fR"
 Corresponds to the \fB--disabled\fR option.
 .IP \fBORIGIN_SAMPLE\fR="\fIname\fR"
@@ -101,8 +101,6 @@ Corresponds to the \fB--diskinodes\fR option.
 Corresponds to the \fB--quotatime\fR option.
 .IP \fBQUOTAUGIDLIMIT\fR="\fInum\fR"
 Corresponds to the \fB--quotaugidlimit\fR option.
-.IP \fBNOATIME\fR="\fByes\fR|\fBno\fR"
-Corresponds to the \fB--noatime\fR option.
 .IP \fBCAPABILITY\fR="\fIcapname\fR:\fBon\fR|\fBoff\fR\ [...]"
 Corresponds to the \fB--capability\fR option.
 

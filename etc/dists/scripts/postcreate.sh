@@ -1,5 +1,5 @@
 #!/bin/sh
-#  Copyright (C) 2000-2012, Parallels, Inc. All rights reserved.
+#  Copyright (C) 2000-2013, Parallels, Inc. All rights reserved.
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -114,9 +114,12 @@ _sc()
 {
 	local val=$1
 	shift
-	local file
-	for file in $*; do
-		setfattr -n security.capability -v $val ${VE_ROOT}${file}
+	local f file
+	for f in $*; do
+		file=${VE_ROOT}${f}
+		if [ -e $file ]; then
+			setfattr -n security.capability -v $val $file
+		fi
 	done
 }
 
@@ -128,9 +131,15 @@ set_file_caps()
 	_sc 0sAQAAAgkAAAAAAAAAAAAAAAAAAAA= /usr/libexec/pt_chown
 	_sc 0sAQAAAsIAAAAAAAAAAAAAAAAAAAA= /usr/sbin/suexec
 	_sc 0sAQAAAgAgAAAAAAAAAAAAAAAAAAA= /bin/ping /bin/ping6
+
+	# also, for Fedora 18+
+	grep -qEw '1[89]' ${VE_ROOT}/etc/fedora-release 2>/dev/null || return
+	_sc 0sAQAAAgAgAAAAAAAAAAAAAAAAAAA= /usr/sbin/arping /usr/sbin/clockdiff
+	_sc 0sAQAAAgIACAAAAAAAAAAAAAAAAAA= /usr/bin/systemd-detect-virt
 }
 
 [ -z "${VE_ROOT}" ] && exit 1
+umask 0022
 randcrontab
 disableroot
 set_network

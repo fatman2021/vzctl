@@ -28,6 +28,7 @@
 /* not a VZ-capable kernel */
 #define VZ_BAD_KERNEL			5
 #define VZ_RESOURCE_ERROR		6
+/* #define VZCTL_E_NOMEM			VZ_RESOURCE_ERROR */
 #define VZ_ENVCREATE_ERROR		7
 
 #define VZ_COMMAND_EXECUTION_ERROR	8
@@ -132,6 +133,9 @@
 /* Template Error */
 #define VZ_OSTEMPLATE_NOT_FOUND		91
 
+/* ploop might not be supported by kernel or vzctl */
+#define VZ_PLOOP_UNSUP			99
+
 #define VZ_GET_IP_ERROR			100
 #define VZ_NETDEV_ERROR			104
 #define VZ_VE_START_DISABLED		105
@@ -151,7 +155,6 @@
 #define VZ_SET_IO			148
 
 /* ploop */
-#define VZ_NO_IMAGE_FILE		150
 #define VZCTL_E_CREATE_IMAGE		151
 #define VZCTL_E_MOUNT_IMAGE		152
 #define VZCTL_E_UMOUNT_IMAGE		153
@@ -161,4 +164,9 @@
 #define VZCTL_E_MERGE_SNAPSHOT		157
 #define VZCTL_E_DELETE_SNAPSHOT		158
 #define VZCTL_E_SWITCH_SNAPSHOT		159
+#define VZCTL_E_MOUNT_SNAPSHOT		160
+#define VZCTL_E_UMOUNT_SNAPSHOT		161
+#define VZCTL_E_COMPACT_IMAGE		166
+#define VZCTL_E_LIST_SNAPSHOT		167
+
 #endif /* _VZ_ERROR_H_ */
